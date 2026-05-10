@@ -302,11 +302,20 @@ app.get('/api/applications/:code', (req, res) => {
       current_status: app.current_status,
       current_status_at: app.current_status_at,
       assigned_officer_name: app.assigned_officer_name,
-      timeline: app.timeline.map(t => ({
-        status: t.status,
-        message: t.citizen_message,
-        at: t.created_at
-      }))
+      // Citizen timeline only includes events that have something to say to
+      // the citizen. Internal-only rows (e.g. "Assign to me" — which writes a
+      // status_event with the current status and no citizen_message so the
+      // officer audit trail captures who picked up the case) are excluded.
+      // Without this filter, those rows render on the public tracker as
+      // "Not approved" or "Under review" with no body — confusing and
+      // sometimes alarming.
+      timeline: app.timeline
+        .filter(t => t.citizen_message && t.citizen_message.trim())
+        .map(t => ({
+          status: t.status,
+          message: t.citizen_message,
+          at: t.created_at
+        }))
     }
   });
 });
