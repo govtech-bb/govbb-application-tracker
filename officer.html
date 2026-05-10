@@ -188,14 +188,18 @@
   .empty { padding: 32px; text-align: center; color: var(--slate-500); background: #fff; border: 1px dashed var(--slate-300); border-radius: 8px; margin: 16px 0; }
   .loading { padding: 32px; text-align: center; color: var(--slate-500); font-size: 13px; }
 
-  /* Modal */
-  .modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 50; display: none; align-items: center; justify-content: center; padding: 24px; }
-  .modal-backdrop.is-open { display: flex; }
-  .modal { background: #fff; border-radius: 8px; width: min(560px, 100%); max-height: 90vh; overflow: auto; box-shadow: 0 20px 60px rgba(15,23,42,.3); }
-  .modal-head { padding: 18px 24px; border-bottom: 1px solid var(--slate-200); display: flex; justify-content: space-between; align-items: center; }
-  .modal-head h2 { margin: 0; font-size: 17px; font-weight: 700; }
-  .modal-body { padding: 18px 24px; }
-  .modal-foot { padding: 14px 24px; border-top: 1px solid var(--slate-200); display: flex; justify-content: flex-end; gap: 8px; }
+  /* Form drawer — reuses the application drawer's visual language so admin
+     forms feel like an extension of the page rather than a takeover. */
+  .form-drawer { display: flex; flex-direction: column; }
+  .form-drawer .drawer-body { flex: 1; overflow-y: auto; padding-bottom: 16px; }
+  .form-drawer .drawer-actions { padding: 14px 24px; border-top: 1px solid var(--slate-200); display: flex; justify-content: flex-end; gap: 8px; background: #fff; position: sticky; bottom: 0; }
+  .form-drawer-subtitle { color: var(--slate-500); font-size: 13px; margin-top: 4px; }
+  .form-drawer-subtitle code { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--slate-700); }
+  .form-drawer .info-box { background: var(--accent-soft); border: 1px solid #c7d2fe; padding: 10px 12px; border-radius: 6px; font-size: 13px; color: var(--slate-800); margin-bottom: 16px; }
+  .form-drawer .check-list { display: flex; flex-direction: column; gap: 6px; }
+  .form-drawer .check-list .check { padding: 6px 10px; border: 1px solid var(--slate-200); border-radius: 6px; background: #fff; cursor: pointer; }
+  .form-drawer .check-list .check:hover { background: var(--slate-50); }
+  .form-drawer .check-list .check input { margin-right: 4px; }
 
   /* Dashboard */
   .dash-wrap { padding: 24px; overflow: auto; }
@@ -478,19 +482,24 @@
   </div>
 </aside>
 
-<!-- Generic modal -->
-<div class="modal-backdrop" id="modal-backdrop">
-  <div class="modal" role="dialog" aria-labelledby="modal-title">
-    <div class="modal-head">
-      <h2 id="modal-title">—</h2>
-      <button class="drawer-close" id="modal-close" aria-label="Close">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
+<!-- Generic form drawer (admin forms slide in from the right, matching the
+     application drawer pattern used in Cases). -->
+<div class="drawer-backdrop" id="form-backdrop"></div>
+<aside class="drawer form-drawer" id="form-drawer" aria-hidden="true" aria-labelledby="form-drawer-title">
+  <div class="drawer-head">
+    <div>
+      <h2 id="form-drawer-title">—</h2>
+      <div class="form-drawer-subtitle" id="form-drawer-subtitle" hidden></div>
     </div>
-    <div class="modal-body" id="modal-body"></div>
-    <div class="modal-foot" id="modal-foot"></div>
+    <button class="drawer-close" id="form-drawer-close" aria-label="Close">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
   </div>
-</div>
+  <div class="drawer-body">
+    <div id="form-drawer-content"></div>
+  </div>
+  <div class="drawer-actions" id="form-drawer-actions"></div>
+</aside>
 
 <script>
 const STATUS_LABELS = {
@@ -517,6 +526,10 @@ const state = {
    ========================================================= */
 function switchView(view) {
   state.view = view;
+  // Close any open side drawer when switching context — avoids the user
+  // landing on a different tab with a stale form half-filled in.
+  if (typeof closeDrawer === 'function') closeDrawer();
+  if (typeof closeModal === 'function') closeModal();
   document.querySelectorAll('#tabbar button').forEach(b => b.classList.toggle('is-active', b.dataset.view === view));
   document.querySelectorAll('main > .view').forEach(s => s.classList.toggle('is-active', s.dataset.view === view));
   if (view === 'dashboard') loadDashboard();
@@ -955,21 +968,20 @@ document.getElementById('user-new').addEventListener('click', () => openEditUser
 function openEditUser(officer) {
   const isNew = !officer;
   openModal({
-    title: isNew ? 'Add user' : `Edit ${officer.name}`,
+    title: isNew ? 'Add user' : 'Edit user',
+    subtitle: officer ? `${escapeHtml(officer.name)} · <code>${escapeHtml(officer.email)}</code>` : null,
     body: `
       <form id="user-form" novalidate>
-        ${isNew ? `<div class="hint" style="color:var(--slate-600);font-size:13px;margin-bottom:14px;background:var(--accent-soft);border:1px solid #c7d2fe;padding:10px 12px;border-radius:6px;">
+        ${isNew ? `<div class="info-box">
           The new user will receive an email with a link to set their own password. The link is valid for 24 hours.
         </div>` : ''}
-        <div class="field-row">
-          <div class="field">
-            <label>Name *</label>
-            <input type="text" name="name" value="${escapeHtml(officer ? officer.name : '')}" required>
-          </div>
-          <div class="field">
-            <label>Email ${isNew ? '<span style="color:var(--red);">* (this is their login)</span>' : '<span style="color:var(--slate-500);font-weight:500;">(can\'t change)</span>'}</label>
-            <input type="email" name="email" value="${escapeHtml(officer ? officer.email : '')}" ${isNew ? '' : 'disabled'} required>
-          </div>
+        <div class="field">
+          <label>Name *</label>
+          <input type="text" name="name" value="${escapeHtml(officer ? officer.name : '')}" required>
+        </div>
+        <div class="field">
+          <label>Email ${isNew ? '<span style="color:var(--red);">* — this is their login</span>' : '<span style="color:var(--slate-500);font-weight:500;">(can\'t change)</span>'}</label>
+          <input type="email" name="email" value="${escapeHtml(officer ? officer.email : '')}" ${isNew ? '' : 'disabled'} required>
         </div>
         <div class="field-row">
           <div class="field">
@@ -981,9 +993,9 @@ function openEditUser(officer) {
             <input type="text" name="role" value="${escapeHtml(officer ? officer.role : '')}" placeholder="e.g. YDP Officer" required>
           </div>
         </div>
-        <div class="field-row">
-          <label class="check"><input type="checkbox" name="is_admin" ${officer && officer.is_admin ? 'checked' : ''}> Admin (can manage users, programmes, see audit log)</label>
-          ${isNew ? '' : `<label class="check"><input type="checkbox" name="is_active" ${officer.is_active ? 'checked' : ''} ${me && officer.id === me.id ? 'disabled' : ''}> Active (can sign in)</label>`}
+        <div class="field" style="margin-top:4px;">
+          <label class="check"><input type="checkbox" name="is_admin" ${officer && officer.is_admin ? 'checked' : ''}> Admin <span style="color:var(--slate-500);font-weight:400;">— can manage users, programmes, and view the audit log</span></label>
+          ${isNew ? '' : `<label class="check" style="margin-top:8px;"><input type="checkbox" name="is_active" ${officer.is_active ? 'checked' : ''} ${me && officer.id === me.id ? 'disabled' : ''}> Active <span style="color:var(--slate-500);font-weight:400;">— can sign in${me && officer.id === me.id ? ' (you can\\'t deactivate yourself)' : ''}</span></label>`}
         </div>
         <div id="user-error" class="error-flash" hidden></div>
       </form>
@@ -1028,28 +1040,39 @@ async function openOfficerProgrammes(officer) {
   try { data = await api('GET', '/api/admin/officers/' + officer.id + '/programmes'); }
   catch (e) { alert(e.message); return; }
   openModal({
-    title: `Programmes for ${officer.name}`,
+    title: 'Programme access',
+    subtitle: `${escapeHtml(officer.name)} · <code>${escapeHtml(officer.email)}</code>`,
     body: `
-      <div class="hint" style="color:var(--slate-600);font-size:13px;margin-bottom:12px;">
-        Tick the programmes ${officer.name} should be able to see and manage. They will only see applications in these programmes.
-        ${officer.is_admin ? '<br><strong>Note:</strong> Admins see every application regardless of these settings.' : ''}
+      <div class="info-box">
+        Tick the programmes ${escapeHtml(officer.name.split(' ')[0])} should be able to see and manage. They will only see applications in these programmes.
+        ${officer.is_admin ? '<br><strong>Note:</strong> admins see every application regardless of these settings — this just controls what they\'d see if their admin flag were turned off.' : ''}
       </div>
-      <form id="op-form" style="display:flex;flex-direction:column;gap:8px;">
+      <form id="op-form" class="check-list">
         ${data.programmes.map(p => `
           <label class="check">
             <input type="checkbox" value="${p.id}" ${p.assigned ? 'checked' : ''}>
-            <span><strong>${escapeHtml(p.code)}</strong> — ${escapeHtml(p.name)}</span>
+            <span><strong>${escapeHtml(p.code)}</strong> <span style="color:var(--slate-600);">— ${escapeHtml(p.name)}</span></span>
           </label>
         `).join('')}
-        <div id="op-error" class="error-flash" hidden></div>
       </form>
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button type="button" class="btn btn-sm" id="op-all">Select all</button>
+        <button type="button" class="btn btn-sm" id="op-none">Select none</button>
+      </div>
+      <div id="op-error" class="error-flash" hidden style="margin-top:14px;"></div>
     `,
     footer: `
       <button class="btn" id="op-cancel">Cancel</button>
-      <button class="btn btn-primary" id="op-save">Save</button>
+      <button class="btn btn-primary" id="op-save">Save programme access</button>
     `,
     onMount: () => {
       document.getElementById('op-cancel').addEventListener('click', closeModal);
+      document.getElementById('op-all').addEventListener('click', () => {
+        document.querySelectorAll('#op-form input[type=checkbox]').forEach(i => { i.checked = true; });
+      });
+      document.getElementById('op-none').addEventListener('click', () => {
+        document.querySelectorAll('#op-form input[type=checkbox]').forEach(i => { i.checked = false; });
+      });
       document.getElementById('op-save').addEventListener('click', async () => {
         const ids = [...document.querySelectorAll('#op-form input:checked')].map(i => parseInt(i.value, 10));
         const errEl = document.getElementById('op-error');
@@ -1115,13 +1138,17 @@ async function toggleProgrammeAccepting(p) {
 function openEditProgramme(programme) {
   const isNew = !programme;
   openModal({
-    title: isNew ? 'Add programme' : `Edit ${programme.name}`,
+    title: isNew ? 'Add programme' : 'Edit programme',
+    subtitle: programme ? `<code>${escapeHtml(programme.code)}</code> · ${escapeHtml(programme.name)}` : null,
     body: `
       <form id="prog-form" novalidate>
+        ${isNew ? `<div class="info-box">
+          Every active officer will automatically gain access to this programme. You can adjust per-officer access from the Users tab.
+        </div>` : ''}
         <div class="field-row">
           <div class="field">
             <label>Code ${isNew ? '<span style="color:var(--red);">*</span>' : '<span style="color:var(--slate-500);font-weight:500;">(can\'t change)</span>'}</label>
-            <input type="text" name="code" value="${escapeHtml(programme ? programme.code : '')}" ${isNew ? 'required pattern="[A-Z][A-Z0-9_-]{1,15}"' : 'disabled'}>
+            <input type="text" name="code" value="${escapeHtml(programme ? programme.code : '')}" ${isNew ? 'required pattern="[A-Z][A-Z0-9_-]{1,15}" placeholder="e.g. NEWPROG"' : 'disabled'}>
           </div>
           <div class="field">
             <label>Default SLA (days) *</label>
@@ -1139,17 +1166,19 @@ function openEditProgramme(programme) {
         <div class="field-row">
           <div class="field">
             <label>Contact email</label>
-            <input type="email" name="contact_email" value="${escapeHtml(programme ? (programme.contact_email || '') : '')}">
+            <input type="email" name="contact_email" value="${escapeHtml(programme ? (programme.contact_email || '') : '')}" placeholder="e.g. byac@barbados.gov.bb">
           </div>
           <div class="field">
             <label>Contact phone</label>
-            <input type="text" name="contact_phone" value="${escapeHtml(programme ? (programme.contact_phone || '') : '')}">
+            <input type="text" name="contact_phone" value="${escapeHtml(programme ? (programme.contact_phone || '') : '')}" placeholder="(246) 535-0000">
           </div>
         </div>
-        <label class="check">
-          <input type="checkbox" name="accepting_applications" ${(programme ? programme.accepting_applications : true) ? 'checked' : ''}>
-          Currently accepting applications
-        </label>
+        <div class="field" style="margin-top:4px;">
+          <label class="check">
+            <input type="checkbox" name="accepting_applications" ${(programme ? programme.accepting_applications : true) ? 'checked' : ''}>
+            Currently accepting applications <span style="color:var(--slate-500);font-weight:400;">— uncheck to close intake</span>
+          </label>
+        </div>
         <div id="prog-error" class="error-flash" hidden></div>
       </form>
     `,
@@ -1269,19 +1298,35 @@ document.getElementById('audit-refresh').addEventListener('click', () => loadAud
 document.getElementById('audit-more').addEventListener('click', () => loadAuditLog(false));
 
 /* =========================================================
-   Modal helper
+   Form drawer (replaces the old centred modal)
    ========================================================= */
-const modalBackdrop = document.getElementById('modal-backdrop');
-function openModal({ title, body, footer, onMount }) {
-  document.getElementById('modal-title').textContent = title;
-  document.getElementById('modal-body').innerHTML = body;
-  document.getElementById('modal-foot').innerHTML = footer || '';
-  modalBackdrop.classList.add('is-open');
+const formDrawer = document.getElementById('form-drawer');
+const formBackdrop = document.getElementById('form-backdrop');
+
+function openModal({ title, subtitle, body, footer, onMount }) {
+  // Close the application drawer if it's open — never two drawers at once.
+  closeDrawer();
+  document.getElementById('form-drawer-title').textContent = title;
+  const subEl = document.getElementById('form-drawer-subtitle');
+  if (subtitle) { subEl.innerHTML = subtitle; subEl.hidden = false; }
+  else { subEl.innerHTML = ''; subEl.hidden = true; }
+  document.getElementById('form-drawer-content').innerHTML = body;
+  document.getElementById('form-drawer-actions').innerHTML = footer || '';
+  formDrawer.classList.add('is-open');
+  formDrawer.setAttribute('aria-hidden', 'false');
+  formBackdrop.classList.add('is-open');
   if (onMount) onMount();
+  // Auto-focus the first input/select for keyboard-first users.
+  const first = formDrawer.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled])');
+  if (first) setTimeout(() => first.focus(), 50);
 }
-function closeModal() { modalBackdrop.classList.remove('is-open'); }
-document.getElementById('modal-close').addEventListener('click', closeModal);
-modalBackdrop.addEventListener('click', e => { if (e.target === modalBackdrop) closeModal(); });
+function closeModal() {
+  formDrawer.classList.remove('is-open');
+  formDrawer.setAttribute('aria-hidden', 'true');
+  formBackdrop.classList.remove('is-open');
+}
+document.getElementById('form-drawer-close').addEventListener('click', closeModal);
+formBackdrop.addEventListener('click', closeModal);
 
 /* =========================================================
    Utilities
