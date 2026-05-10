@@ -46,12 +46,6 @@ tailwind.config = {
   .timeline-marker { position: absolute; left: -2.5rem; top: 0; width: 2rem; height: 2rem; border-radius: 999px; background: #fff; border: 3px solid #e0e4e9; display: flex; align-items: center; justify-content: center; font-size: .9rem; }
   .timeline-marker.is-current { border-color: #00267f; background: #fff9e9; }
   .timeline-marker.is-done { border-color: #1fbf84; background: #1fbf84; color: #fff; }
-  .chat-msg { max-width: 88%; padding: .75rem 1rem; border-radius: .75rem; font-size: 1.0625rem; line-height: 1.45; }
-  .chat-msg-bot { background: #e5e9f2; color: #000; border-top-left-radius: .25rem; align-self: flex-start; }
-  .chat-msg-user { background: #00267f; color: #fff; border-top-right-radius: .25rem; align-self: flex-end; }
-  .chat-chip { background: #fff; border: 2px solid #00267f; color: #00267f; padding: .375rem .75rem; border-radius: 999px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background .15s; }
-  .chat-chip:hover { background: #e5e9f2; }
-  .chat-chip:focus-visible { outline: 3px solid #ffc726; outline-offset: 2px; }
   [data-route] { display: none; }
   [data-route].is-active { display: block; }
   .skeleton { display: inline-block; width: 8em; height: 1em; background: #e0e4e9; border-radius: 4px; animation: pulse 1.4s ease-in-out infinite; }
@@ -121,15 +115,6 @@ tailwind.config = {
 
       <hr class="border-bb-grey-00 my-l">
 
-      <h2 class="text-h3 font-bold mb-xs">Or chat to us about it</h2>
-      <p class="text-[1.125rem] mb-s">Not sure where your code is, or want a plain‑English answer about what your status means? Chat with the GovBB assistant.</p>
-      <a href="/chat" class="inline-flex items-center gap-2 border-2 border-bb-blue-100 text-bb-blue-100 bg-white hover:bg-bb-blue-10 font-bold text-[1.125rem] px-m py-3 rounded-sm focus-ring no-underline">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3.5-7.1L21 4v5h-5"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></svg>
-        Open chat
-      </a>
-
-      <hr class="border-bb-grey-00 my-l">
-
       <h2 class="text-h3 font-bold mb-xs">Try a sample code</h2>
       <p class="text-[1.0625rem] text-bb-mid-grey-00 mb-s">For demonstration only. Click any code to load that application.</p>
       <ul class="space-y-2 text-[1rem]" id="sample-codes">
@@ -150,55 +135,34 @@ tailwind.config = {
       <h1 class="text-[2.5rem] md:text-h2 font-bold leading-[1.1] mb-2" id="s-headline"></h1>
       <p class="text-bb-mid-grey-00 text-[1.0625rem] mb-m">Reference <span id="s-code" class="font-mono font-bold text-bb-black-00"></span></p>
 
-      <div class="grid md:grid-cols-3 gap-m">
-        <div class="md:col-span-2 space-y-m">
-          <div id="s-statusbox" class="border-l-4 p-m rounded-sm">
-            <div class="flex flex-wrap items-center gap-s mb-2">
-              <span id="s-statuspill" class="status-pill"></span>
-              <span class="text-[1rem] text-bb-mid-grey-00">Updated <span id="s-updated"></span></span>
-            </div>
-            <h2 class="font-bold text-h4 mb-xs" id="s-status-title"></h2>
-            <p class="text-[1.0625rem]" id="s-status-desc"></p>
-            <div id="s-action" class="mt-s hidden"></div>
+      <div class="space-y-m max-w-3xl">
+        <div id="s-statusbox" class="border-l-4 p-m rounded-sm">
+          <div class="flex flex-wrap items-center gap-s mb-2">
+            <span id="s-statuspill" class="status-pill"></span>
+            <span class="text-[1rem] text-bb-mid-grey-00">Updated <span id="s-updated"></span></span>
           </div>
-
-          <div>
-            <h2 class="font-bold text-h3 mb-xs">What happens next</h2>
-            <p class="text-[1.0625rem]" id="s-next"></p>
-          </div>
-
-          <div>
-            <h2 class="font-bold text-h3 mb-s">Activity</h2>
-            <ol class="timeline" id="s-timeline"></ol>
-          </div>
-
-          <div class="bg-bb-blue-10 p-m rounded-sm">
-            <h2 class="font-bold text-h4 mb-xs">Need to speak to someone?</h2>
-            <p class="text-[1rem] mb-1"><strong>Department:</strong> <span id="s-dept"></span></p>
-            <p class="text-[1rem] mb-1"><strong>Phone:</strong> <span id="s-phone"></span></p>
-            <p class="text-[1rem]"><strong>Email:</strong> <span id="s-email"></span></p>
-            <p class="text-[1rem] mt-2 text-bb-mid-grey-00">Quote your reference code when you call or email.</p>
-          </div>
+          <h2 class="font-bold text-h4 mb-xs" id="s-status-title"></h2>
+          <p class="text-[1.0625rem]" id="s-status-desc"></p>
+          <div id="s-action" class="mt-s hidden"></div>
         </div>
 
-        <aside class="md:col-span-1">
-          <div class="border-2 border-bb-grey-00 rounded-sm flex flex-col" style="height: 32rem;">
-            <div class="bg-bb-blue-100 text-white p-s rounded-t-sm">
-              <p class="font-bold text-[1.0625rem]">GovBB assistant</p>
-              <p class="text-[0.9rem] opacity-90">Ask about this application</p>
-            </div>
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-s flex flex-col gap-2"></div>
-            <div class="p-s border-t border-bb-grey-00">
-              <div id="chat-chips" class="flex flex-wrap gap-2 mb-2"></div>
-              <form id="chat-form" class="flex gap-2" novalidate>
-                <input id="chat-input" type="text" autocomplete="off"
-                       class="flex-1 min-w-0 border-2 border-bb-black-00 rounded-sm px-2 py-1.5 text-[1rem] focus:outline-none focus:ring-4 focus:ring-bb-teal-100"
-                       placeholder="Type a question…">
-                <button type="submit" class="bg-bb-teal-00 hover:bg-[#0a4549] text-white font-bold px-3 py-1.5 rounded-sm focus-ring text-[1rem]">Send</button>
-              </form>
-            </div>
-          </div>
-        </aside>
+        <div>
+          <h2 class="font-bold text-h3 mb-xs">What happens next</h2>
+          <p class="text-[1.0625rem]" id="s-next"></p>
+        </div>
+
+        <div>
+          <h2 class="font-bold text-h3 mb-s">Activity</h2>
+          <ol class="timeline" id="s-timeline"></ol>
+        </div>
+
+        <div class="bg-bb-blue-10 p-m rounded-sm">
+          <h2 class="font-bold text-h4 mb-xs">Need to speak to someone?</h2>
+          <p class="text-[1rem] mb-1"><strong>Department:</strong> <span id="s-dept"></span></p>
+          <p class="text-[1rem] mb-1"><strong>Phone:</strong> <span id="s-phone"></span></p>
+          <p class="text-[1rem]"><strong>Email:</strong> <span id="s-email"></span></p>
+          <p class="text-[1rem] mt-2 text-bb-mid-grey-00">Quote your reference code when you call or email.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -212,30 +176,6 @@ tailwind.config = {
     </div>
   </section>
 
-  <!-- ROUTE: CHAT -->
-  <section data-route="chat">
-    <div class="container py-m max-w-3xl">
-      <a href="/" class="inline-flex items-center gap-1 text-bb-blue-100 underline underline-offset-2 hover:no-underline mb-m focus-ring rounded-sm px-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-        Back
-      </a>
-      <h1 class="text-[2.5rem] font-bold leading-[1.1] mb-s">Chat with the GovBB assistant</h1>
-      <p class="text-[1.0625rem] mb-m">Paste your reference code or ask a question. The assistant can read your status, explain what it means, and tell you what's next. For a person, ask "speak to someone".</p>
-
-      <div class="border-2 border-bb-grey-00 rounded-sm flex flex-col bg-white" style="height: 28rem;">
-        <div id="chat-messages-full" class="flex-1 overflow-y-auto p-s flex flex-col gap-2"></div>
-        <div class="p-s border-t border-bb-grey-00">
-          <div id="chat-chips-full" class="flex flex-wrap gap-2 mb-2"></div>
-          <form id="chat-form-full" class="flex gap-2" novalidate>
-            <input id="chat-input-full" type="text" autocomplete="off"
-                   class="flex-1 min-w-0 border-2 border-bb-black-00 rounded-sm px-s py-2 text-[1.0625rem] focus:outline-none focus:ring-4 focus:ring-bb-teal-100"
-                   placeholder="Type your reference code or a question…">
-            <button type="submit" class="bg-bb-teal-00 hover:bg-[#0a4549] text-white font-bold px-m py-2 rounded-sm focus-ring text-[1rem]">Send</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  </section>
 
 </main>
 
@@ -297,7 +237,6 @@ const STATUS_META = {
    ROUTING (path-based)
         /              landing
         /track/:code   status detail
-        /chat          full chat page
    ========================================================= */
 function setRoute(name) {
   document.querySelectorAll('[data-route]').forEach(el => el.classList.remove('is-active'));
@@ -313,9 +252,6 @@ async function handleRoute() {
   } else if (p.startsWith('/track/')) {
     const code = decodeURIComponent(p.slice('/track/'.length));
     await renderStatus(code);
-  } else if (p === '/chat') {
-    setRoute('chat');
-    renderFullChat();
   } else {
     setRoute('landing');
     renderSampleCodes();
@@ -439,11 +375,13 @@ async function renderStatus(code) {
     action.innerHTML = '';
   }
 
-  // Timeline
+  // Timeline — chronological order, oldest at the top, newest at the bottom.
+  // The newest entry is the "current" one and is highlighted.
   const tl = document.getElementById('s-timeline');
-  tl.innerHTML = app.timeline.slice().reverse().map((step, idx) => {
+  const items = app.timeline;
+  tl.innerHTML = items.map((step, idx) => {
     const m = STATUS_META[step.status] || STATUS_META.received;
-    const isCurrent = idx === 0;
+    const isCurrent = idx === items.length - 1;
     return `
       <li class="timeline-item">
         <span class="timeline-marker ${isCurrent ? 'is-current' : 'is-done'}" aria-hidden="true">
@@ -454,129 +392,6 @@ async function renderStatus(code) {
       </li>
     `;
   }).join('');
-
-  setupChat({
-    msgsId: 'chat-messages',
-    chipsId: 'chat-chips',
-    formId: 'chat-form',
-    inputId: 'chat-input',
-    app
-  });
-}
-
-/* =========================================================
-   HYBRID CHAT
-   ========================================================= */
-function setupChat({ msgsId, chipsId, formId, inputId, app }) {
-  const msgs = document.getElementById(msgsId);
-  const chips = document.getElementById(chipsId);
-  const form = document.getElementById(formId);
-  const input = document.getElementById(inputId);
-  msgs.innerHTML = '';
-  chips.innerHTML = '';
-
-  const greeting = app
-    ? `Hi ${(app.applicant_name||'').split(' ')[0]}. I can help with your <strong>${app.programme_name}</strong> application (${app.code}). What would you like to know?`
-    : `Hi. Paste your reference code (for example BYAC-2026-A4F2K9X) or pick a question below.`;
-  appendMsg(msgs, greeting, 'bot');
-
-  const baseChips = app ? [
-    { label: 'Where is my application?',  intent: 'where' },
-    { label: 'What does this status mean?', intent: 'meaning' },
-    { label: 'What happens next?',          intent: 'next' },
-    { label: 'Contact my officer',          intent: 'contact' }
-  ] : [
-    { label: 'How do I find my code?',      intent: 'find_code' },
-    { label: 'I’ve lost my email',     intent: 'lost_email' },
-    { label: 'Speak to someone',            intent: 'human' }
-  ];
-  baseChips.forEach(c => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'chat-chip';
-    b.textContent = c.label;
-    b.addEventListener('click', () => handleIntent(c.intent, c.label, msgs, app));
-    chips.appendChild(b);
-  });
-
-  form.onsubmit = e => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    appendMsg(msgs, escapeHtml(text), 'user');
-    input.value = '';
-    handleFreeText(text, msgs, app);
-  };
-}
-
-function handleIntent(intent, label, msgs, app) {
-  appendMsg(msgs, label, 'user');
-  if (!app && (intent === 'find_code' || intent === 'lost_email' || intent === 'human')) {
-    const replies = {
-      find_code:  'Your reference code starts with the programme prefix and looks like BYAC-2026-A4F2K9X. Check the email you got after applying — it’s in the subject line and the first paragraph.',
-      lost_email: 'No problem. Tell me the programme you applied for and your full name, and I’ll route you to the right team to recover your reference.',
-      human:      'I’ll route you to a person. Tell me which programme you applied for, and your name. An officer will reply by email within 2 working days.'
-    };
-    setTimeout(() => appendMsg(msgs, replies[intent], 'bot'), 350);
-    return;
-  }
-  if (!app) return;
-  const meta = STATUS_META[app.current_status] || STATUS_META.received;
-  const last = app.timeline[app.timeline.length - 1];
-  const replies = {
-    where:   `Your application is currently <strong>${meta.label}</strong>. The last update was on ${formatDate(last.at)}: “${escapeHtml(last.message || '')}”`,
-    meaning: `<strong>${meta.label}</strong> means: ${meta.desc}`,
-    next:    meta.next,
-    contact: `Your case officer is <strong>${app.assigned_officer_name || 'not yet assigned'}</strong>. You can call ${app.contact_phone || ''} or email <a href="mailto:${app.contact_email || ''}" class="underline">${app.contact_email || ''}</a>. Quote your reference ${app.code}.`
-  };
-  setTimeout(() => appendMsg(msgs, replies[intent], 'bot'), 350);
-}
-
-function handleFreeText(text, msgs, app) {
-  const t = text.toLowerCase();
-  const codeMatch = text.toUpperCase().match(/[A-Z]{2,10}-\d{4}-[A-Z0-9]{6,11}/);
-  if (codeMatch) {
-    setTimeout(async () => {
-      const found = await fetchApp(codeMatch[0]);
-      if (found) {
-        appendMsg(msgs, `Found it. Loading <strong>${found.code}</strong>…`, 'bot');
-        setTimeout(() => navigate('/track/' + encodeURIComponent(found.code)), 500);
-      } else {
-        appendMsg(msgs, `I couldn’t find <strong>${codeMatch[0]}</strong>. Check the code and try again.`, 'bot');
-      }
-    }, 350);
-    return;
-  }
-  let intent = null;
-  if (/(where|status|update|progress)/.test(t)) intent = 'where';
-  else if (/(mean|what is|explain)/.test(t)) intent = 'meaning';
-  else if (/(next|when|how long|timeline)/.test(t)) intent = 'next';
-  else if (/(officer|contact|call|email|speak|phone|human|person)/.test(t)) intent = 'contact';
-  if (app && intent) { handleIntent(intent, '', msgs, app); return; }
-  setTimeout(() => {
-    const reply = app
-      ? `Thanks. I’ll route this to your case officer at ${app.ministry}. They reply within 2 working days to the email on your application. If it’s urgent, call ${app.contact_phone || ''} and quote ${app.code}.`
-      : 'Thanks. To help further I need your reference code (it looks like BYAC-2026-A4F2K9X). If you don’t have it, choose "I’ve lost my email" above.';
-    appendMsg(msgs, reply, 'bot');
-  }, 400);
-}
-
-function appendMsg(msgs, html, who) {
-  const el = document.createElement('div');
-  el.className = 'chat-msg ' + (who === 'user' ? 'chat-msg-user' : 'chat-msg-bot');
-  el.innerHTML = html;
-  msgs.appendChild(el);
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
-function renderFullChat() {
-  setupChat({
-    msgsId: 'chat-messages-full',
-    chipsId: 'chat-chips-full',
-    formId: 'chat-form-full',
-    inputId: 'chat-input-full',
-    app: null
-  });
 }
 
 /* =========================================================
