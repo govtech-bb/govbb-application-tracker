@@ -376,9 +376,69 @@ async function sendTestEmail({ to, sentByOfficer }) {
   }
 }
 
+/* =========================================================
+   Officer password setup / reset email
+   ========================================================= */
+
+/**
+ * Send a "set your password" link to an officer. Used in two flows:
+ *   - new officer creation (purpose='set_initial', subject "Welcome…")
+ *   - admin-triggered password reset (purpose='reset', subject "Reset your password")
+ *
+ * The link expires after PASSWORD_TOKEN_TTL_HOURS (default 24).
+ */
+async function sendPasswordSetupEmail({ officer, plaintextToken, ttlHours, isInitial }) {
+  const link = `${TRACKER_BASE}/set-password/${encodeURIComponent(plaintextToken)}`;
+  const subject = isInitial
+    ? `Set up your GovBB Tracker account`
+    : `Reset your GovBB Tracker password`;
+  const lead = isInitial
+    ? `An admin has created an account for you on the GovBB Application Tracker. Set a password to sign in.`
+    : `You can set a new password using the link below.`;
+
+  const text = [
+    `Hi ${firstName(officer.name)},`,
+    ``,
+    lead,
+    ``,
+    `Set your password: ${link}`,
+    ``,
+    `This link is valid for ${ttlHours || 24} hours and can only be used once.`,
+    ``,
+    `If you didn't expect this email, you can ignore it.`,
+    ``,
+    `— GovBB Tracker`
+  ].join('\n');
+
+  const html = baseTemplate({
+    headline: isInitial ? 'Set up your account' : 'Reset your password',
+    body: `
+      <p>Hi ${firstName(officer.name)},</p>
+      <p>${lead}</p>
+      <p><a class="cta" href="${link}">Set your password</a></p>
+      <p style="color:#595959; font-size:13.5px;">
+        This link is valid for ${ttlHours || 24} hours and can only be used once.<br>
+        If you didn't expect this email, you can ignore it.
+      </p>
+      <p style="color:#999; font-size:12px;">If the button doesn't work, copy and paste this URL into your browser:<br>${link}</p>
+    `
+  });
+
+  const bodyPath = writeEmailToDisk({
+    to: officer.email,
+    subject, text, html,
+    application_id: null,
+    kind: isInitial ? 'password_setup' : 'password_reset'
+  });
+  const messageId = await sendViaResend({ to: officer.email, subject, text, html });
+  console.log(`[mail] ${isInitial ? 'password_setup' : 'password_reset'} → ${officer.email}${messageId ? ' resend:' + messageId : ' [disk only]'}`);
+  return { ok: true, message_id: messageId, disk_path: bodyPath, delivered_via: messageId ? 'resend' : 'disk-only' };
+}
+
 module.exports = {
   sendSubmissionEmail,
   sendStatusChangeEmail,
+  sendPasswordSetupEmail,
   emailConfig,
   sendTestEmail,
   MAIL_DIR

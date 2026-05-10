@@ -141,6 +141,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Password setup / reset tokens. The plaintext token is sent in the email
+-- link; only the SHA-256 hash is stored. Tokens are single-use and expire
+-- (default 24h, configurable via PASSWORD_TOKEN_TTL_HOURS).
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  officer_id INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  purpose TEXT NOT NULL DEFAULT 'reset',  -- 'set_initial' | 'reset'
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by_officer_id INTEGER REFERENCES officers(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(current_status);
 CREATE INDEX IF NOT EXISTS idx_applications_programme ON applications(programme_id);
 CREATE INDEX IF NOT EXISTS idx_status_events_app ON status_events(application_id);
@@ -149,6 +163,8 @@ CREATE INDEX IF NOT EXISTS idx_api_clients_keyhash ON api_clients(key_hash);
 CREATE INDEX IF NOT EXISTS idx_officer_programmes_officer ON officer_programmes(officer_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_pwreset_token_hash ON password_reset_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_pwreset_officer ON password_reset_tokens(officer_id);
 `);
 
 /* =========================================================
@@ -168,6 +184,19 @@ addColumnIfMissing('officers',     'is_active',                'INTEGER NOT NULL
 addColumnIfMissing('programmes',   'accepting_applications',   'INTEGER NOT NULL DEFAULT 1');
 addColumnIfMissing('programmes',   'closed_at',                'TEXT');
 addColumnIfMissing('applications', 'flagged_after_close',      'INTEGER NOT NULL DEFAULT 0');
+
+// Email-as-username: officers now log in with their email address, not a
+// short username. To avoid breaking pre-migration deployments, sync the
+// username column to the email column for any rows where they differ.
+// Idempotent — runs every boot but only changes rows that need it.
+try {
+  const r = db.prepare(`UPDATE officers SET username = email WHERE username != email`).run();
+  if (r.changes > 0) console.log(`[migrate] aligned ${r.changes} officer username(s) to email`);
+} catch (e) {
+  // If two officers happened to share an email, this would fail. Surface it
+  // loudly rather than crashing the boot — they can be deduped manually.
+  console.error('[migrate] WARNING: could not sync username→email:', e.message);
+}
 
 /* =========================================================
    Helpers

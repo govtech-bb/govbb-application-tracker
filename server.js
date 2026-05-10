@@ -44,9 +44,9 @@
  */
 
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
-const bcrypt = require('bcryptjs');
 
 const {
   db,
@@ -63,10 +63,20 @@ const { requireApiKey } = require('./apikey');
 const {
   sendSubmissionEmail,
   sendStatusChangeEmail,
+  sendPasswordSetupEmail,
   emailConfig,
   sendTestEmail
 } = require('./notifications');
 const { logAction, requestMeta, listAuditLog } = require('./auditLog');
+const {
+  issueToken,
+  findValidToken,
+  consumeTokenAndSetPassword,
+  validatePassword,
+  hashPassword,
+  RULES: PASSWORD_RULES,
+  TOKEN_TTL_HOURS
+} = require('./passwords');
 
 const app = express();
 const PORT = process.env.PORT || 3030;
@@ -143,6 +153,63 @@ app.get('/confirmation/:code', (req, res) => res.sendFile(path.join(__dirname, '
 app.get('/submit-test', (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
 app.get('/officer/login', (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
 app.get('/officer', requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
+app.get('/set-password/:token', (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+
+/* =========================================================
+   Password setup / reset (public — token-protected)
+   ========================================================= */
+
+// Public read of the complexity rules so the live-hint UI can match the server.
+app.get('/api/password-rules', (req, res) => {
+  res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
+});
+
+// Validate a token and return the officer's name+email so the page can greet
+// them. Doesn't expose anything an attacker with the token couldn't already
+// guess from the email they received.
+app.get('/api/password-token/:token', (req, res) => {
+  const t = findValidToken(req.params.token);
+  if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+  res.json({
+    valid: true,
+    purpose: t.purpose,
+    officer: { name: t.officer.name, email: t.officer.email },
+    expires_at: t.expires_at
+  });
+});
+
+// Set a new password using a valid token.
+app.post('/api/set-password', (req, res) => {
+  const { token, password } = req.body || {};
+  if (!token || !password) return res.status(400).json({ error: 'token and password required' });
+
+  const t = findValidToken(token);
+  if (!t || t.error) {
+    logAction({ action: 'password.set_fail', metadata: requestMeta(req, { reason: t && t.error || 'unknown' }) });
+    return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+  }
+
+  const v = validatePassword(password, { email: t.officer.email });
+  if (!v.ok) return res.status(400).json({ error: v.errors[0], errors: v.errors });
+
+  consumeTokenAndSetPassword(t.id, t.officer_id, hashPassword(password));
+  logAction({
+    action: 'password.set_success',
+    target_kind: 'officer', target_id: t.officer_id,
+    metadata: requestMeta(req, { purpose: t.purpose, officer_email: t.officer.email })
+  });
+  res.json({ ok: true, redirect_to: '/officer/login' });
+});
+
+function errorMessage(code) {
+  switch (code) {
+    case 'unknown':  return 'This link is not valid. It may have been mistyped.';
+    case 'used':     return 'This link has already been used. If you need to set a new password, ask an admin to send another link.';
+    case 'expired':  return 'This link has expired. Ask an admin to send a fresh one.';
+    case 'inactive_officer': return 'This account has been deactivated.';
+    default:         return 'This link is not valid.';
+  }
+}
 
 /* =========================================================
    Auth API
@@ -470,27 +537,30 @@ app.get('/api/admin/officers', requireOfficer, requireAdmin, (req, res) => {
   res.json({ officers: rows.map(o => ({ ...o, is_admin: Boolean(o.is_admin), is_active: Boolean(o.is_active) })) });
 });
 
-app.post('/api/admin/officers', requireOfficer, requireAdmin, (req, res) => {
+app.post('/api/admin/officers', requireOfficer, requireAdmin, async (req, res) => {
   const me = req.session.officer;
-  const { username, name, email, ministry, role, is_admin, password } = req.body || {};
+  const { name, email, ministry, role, is_admin } = req.body || {};
 
-  if (!username || !/^[a-z0-9_.\-]{3,32}$/i.test(username)) {
-    return res.status(400).json({ error: 'username required (3-32 chars, letters/digits/._-)' });
-  }
   if (!name || !email || !ministry || !role) {
     return res.status(400).json({ error: 'name, email, ministry and role required' });
   }
-  if (!password || password.length < 8) {
-    return res.status(400).json({ error: 'password required, at least 8 characters' });
+  const cleanEmail = String(email).trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) {
+    return res.status(400).json({ error: 'email must be a valid address' });
   }
-  const exists = db.prepare('SELECT 1 FROM officers WHERE username = ?').get(username);
-  if (exists) return res.status(409).json({ error: 'Username already in use' });
+  // Email is the username — same uniqueness check.
+  const exists = db.prepare('SELECT 1 FROM officers WHERE username = ? OR email = ?').get(cleanEmail, cleanEmail);
+  if (exists) return res.status(409).json({ error: 'An officer with this email already exists' });
 
+  // Officer is created with an unusable random password. The user sets a real
+  // one via the email link. We mark them inactive until they do, so that
+  // forgotten setup emails don't leave a half-onboarded account in limbo.
+  const placeholderHash = hashPassword(crypto.randomBytes(24).toString('base64'));
   const result = db.prepare(`
     INSERT INTO officers (username, password_hash, name, email, ministry, role, is_admin, is_active)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-  `).run(username.toLowerCase(), bcrypt.hashSync(password, 10),
-         name.trim(), email.trim(), ministry.trim(), role.trim(),
+  `).run(cleanEmail, placeholderHash,
+         name.trim(), cleanEmail, ministry.trim(), role.trim(),
          is_admin ? 1 : 0);
   const newId = result.lastInsertRowid;
 
@@ -502,14 +572,24 @@ app.post('/api/admin/officers', requireOfficer, requireAdmin, (req, res) => {
   `);
   for (const pid of allProgrammes) grant.run(newId, pid, me.id);
 
-  const after = getOfficerRow(newId);
+  // Issue a setup token + email it.
+  const officer = getOfficerRow(newId);
+  const { plaintext } = issueToken({ officerId: newId, purpose: 'set_initial', issuedByOfficerId: me.id });
+  let mailResult = null;
+  try {
+    mailResult = await sendPasswordSetupEmail({ officer, plaintextToken: plaintext, ttlHours: TOKEN_TTL_HOURS, isInitial: true });
+  } catch (e) { console.error('Setup email failed:', e); }
+
   logAction({
     actor: me, action: 'officer.create',
     target_kind: 'officer', target_id: newId,
-    after,
-    metadata: requestMeta(req)
+    after: officer,
+    metadata: requestMeta(req, { setup_email_sent: Boolean(mailResult && mailResult.ok) })
   });
-  res.status(201).json({ officer: { ...after, is_admin: Boolean(after.is_admin), is_active: Boolean(after.is_active) } });
+  res.status(201).json({
+    officer: { ...officer, is_admin: Boolean(officer.is_admin), is_active: Boolean(officer.is_active) },
+    setup_email: mailResult ? { delivered_via: mailResult.delivered_via, message_id: mailResult.message_id } : null
+  });
 });
 
 app.patch('/api/admin/officers/:id', requireOfficer, requireAdmin, (req, res) => {
@@ -549,22 +629,30 @@ app.patch('/api/admin/officers/:id', requireOfficer, requireAdmin, (req, res) =>
   res.json({ officer: { ...after, is_admin: Boolean(after.is_admin), is_active: Boolean(after.is_active) } });
 });
 
-app.post('/api/admin/officers/:id/password', requireOfficer, requireAdmin, (req, res) => {
+app.post('/api/admin/officers/:id/password-reset', requireOfficer, requireAdmin, async (req, res) => {
   const me = req.session.officer;
   const id = parseInt(req.params.id, 10);
-  const before = getOfficerRow(id);
-  if (!before) return res.status(404).json({ error: 'Not found' });
-  const { password } = req.body || {};
-  if (!password || password.length < 8) return res.status(400).json({ error: 'password required, at least 8 characters' });
+  const officer = getOfficerRow(id);
+  if (!officer) return res.status(404).json({ error: 'Not found' });
 
-  db.prepare('UPDATE officers SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 10), id);
+  const { plaintext } = issueToken({ officerId: id, purpose: 'reset', issuedByOfficerId: me.id });
+  let mailResult = null;
+  try {
+    mailResult = await sendPasswordSetupEmail({ officer, plaintextToken: plaintext, ttlHours: TOKEN_TTL_HOURS, isInitial: false });
+  } catch (e) { console.error('Reset email failed:', e); }
+
   logAction({
     actor: me,
     action: 'officer.password_reset',
     target_kind: 'officer', target_id: id,
-    metadata: requestMeta(req, { target_username: before.username })
+    metadata: requestMeta(req, { target_email: officer.email, email_sent: Boolean(mailResult && mailResult.ok) })
   });
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    email_sent_to: officer.email,
+    delivered_via: mailResult ? mailResult.delivered_via : null,
+    expires_in_hours: TOKEN_TTL_HOURS
+  });
 });
 
 app.get('/api/admin/officers/:id/programmes', requireOfficer, requireAdmin, (req, res) => {

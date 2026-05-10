@@ -43,6 +43,8 @@ services:
         sync: false
       - key: OFFICER_PASSWORD_JOY
         sync: false
+      - key: PASSWORD_TOKEN_TTL_HOURS
+        value: 24
     disk:
       name: tracker-data
       mountPath: /var/data

@@ -39,8 +39,8 @@
   <div class="err" id="err"></div>
 
   <div class="field">
-    <label for="username">Username</label>
-    <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="email">Email address</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
   </div>
   <div class="field">
     <label for="password">Password</label>
@@ -49,8 +49,7 @@
   <button type="submit">Sign in</button>
 
   <div class="hint">
-    Demo officers seeded for the pilot:<br>
-    <code>andrea / andrea</code> · <code>trevor / trevor</code> · <code>joy / joy</code>
+    Forgot your password? Ask an admin to send you a reset link from the Users tab.
   </div>
 </form>
 
@@ -63,12 +62,13 @@ const next = params.get('next') || '/officer';
 form.addEventListener('submit', async e => {
   e.preventDefault();
   err.classList.remove('is-on');
-  const username = document.getElementById('username').value.trim();
+  const email = document.getElementById('email').value.trim().toLowerCase();
   const password = document.getElementById('password').value;
   const r = await fetch('/api/officer/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+    // The server still accepts `username` for back-compat — email is the value.
+    body: JSON.stringify({ username: email, password })
   });
   if (r.ok) {
     location.href = next;

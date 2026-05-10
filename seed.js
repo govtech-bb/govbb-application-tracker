@@ -82,10 +82,13 @@ const PROGRAMMES = [
   }
 ];
 
+// Officers are identified by email — that's their login. The optional
+// `envKey` is just a stable handle for the OFFICER_PASSWORD_<KEY> env var
+// and must not change between deploys (otherwise prod credentials get lost).
 const OFFICERS = [
-  { username: 'andrea', password: 'andrea',  name: 'Andrea Best',     email: 'andrea.best@barbados.gov.bb',     ministry: 'MYSCE', role: 'Senior YDP Officer',       is_admin: 1 },
-  { username: 'trevor', password: 'trevor',  name: 'Trevor Inniss',   email: 'trevor.inniss@barbados.gov.bb',   ministry: 'MYSCE', role: 'YDP Officer',              is_admin: 0 },
-  { username: 'joy',    password: 'joy',     name: 'Joy Greenidge',   email: 'joy.greenidge@barbados.gov.bb',   ministry: 'MYSCE', role: 'YDP Programme Manager',    is_admin: 0 }
+  { envKey: 'ANDREA', password: 'andrea',  name: 'Andrea Best',     email: 'andrea.best@barbados.gov.bb',     ministry: 'MYSCE', role: 'Senior YDP Officer',       is_admin: 1 },
+  { envKey: 'TREVOR', password: 'trevor',  name: 'Trevor Inniss',   email: 'trevor.inniss@barbados.gov.bb',   ministry: 'MYSCE', role: 'YDP Officer',              is_admin: 0 },
+  { envKey: 'JOY',    password: 'joy',     name: 'Joy Greenidge',   email: 'joy.greenidge@barbados.gov.bb',   ministry: 'MYSCE', role: 'YDP Programme Manager',    is_admin: 0 }
 ];
 
 const APPLICANTS = [
@@ -259,11 +262,13 @@ console.log(`  ✓ ${PROGRAMMES.length} programmes`);
 
 // Officers — upserts password (when supplied), name/email/ministry/role,
 // AND is_admin/is_active so the role assignment in the seed always wins.
+// `username` is set to email (login identifier).
 const upsertOfficerWithPassword = db.prepare(`
   INSERT INTO officers (username, password_hash, name, email, ministry, role, is_admin, is_active)
-  VALUES (@username, @password_hash, @name, @email, @ministry, @role, @is_admin, 1)
+  VALUES (@email, @password_hash, @name, @email, @ministry, @role, @is_admin, 1)
   ON CONFLICT(username) DO UPDATE SET
     password_hash = excluded.password_hash,
+    username = excluded.username,
     name = excluded.name,
     email = excluded.email,
     ministry = excluded.ministry,
@@ -273,56 +278,56 @@ const upsertOfficerWithPassword = db.prepare(`
 `);
 const updateOfficerNoPassword = db.prepare(`
   UPDATE officers
-     SET name = @name, email = @email, ministry = @ministry, role = @role,
+     SET username = @email, name = @name, email = @email, ministry = @ministry, role = @role,
          is_admin = @is_admin, is_active = 1
-   WHERE username = @username
+   WHERE email = @email OR username = @legacy_username
 `);
 
 const officerIds = {};
 const generatedPasswords = []; // for printing at the end in prod
 for (const o of OFFICERS) {
   let plaintext = o.password;
+  // Find the existing row by email OR by the legacy short username (e.g. 'andrea')
+  // so this seed is back-compat with pre-email-login databases.
+  const legacyUsername = o.envKey.toLowerCase();
+  const existing = db.prepare('SELECT id FROM officers WHERE email = ? OR username = ?').get(o.email, legacyUsername);
+
   if (IS_PROD) {
-    const envKey = 'OFFICER_PASSWORD_' + o.username.toUpperCase();
-    plaintext = process.env[envKey];
+    const envVar = 'OFFICER_PASSWORD_' + o.envKey;
+    plaintext = process.env[envVar];
     if (!plaintext) {
-      // Only generate if the row doesn't exist yet. If the officer is already
-      // seeded, leave their existing password alone — but still refresh
-      // is_admin / role / name in case the seed has changed.
-      const existing = db.prepare('SELECT 1 FROM officers WHERE username = ?').get(o.username);
       if (existing) {
+        // Existing row + no override: leave the password alone, just refresh metadata.
         plaintext = null;
       } else {
         plaintext = 'pw_' + crypto.randomBytes(9).toString('base64url');
-        generatedPasswords.push({ username: o.username, password: plaintext });
+        generatedPasswords.push({ email: o.email, password: plaintext });
       }
     }
   }
   if (plaintext) {
     upsertOfficerWithPassword.run({
-      username: o.username,
+      email: o.email,
       password_hash: bcrypt.hashSync(plaintext, 10),
       name: o.name,
-      email: o.email,
       ministry: o.ministry,
       role: o.role,
       is_admin: o.is_admin || 0
     });
   } else {
-    // Existing officer + no password override: refresh metadata only.
     updateOfficerNoPassword.run({
-      username: o.username,
-      name: o.name,
       email: o.email,
+      legacy_username: legacyUsername,
+      name: o.name,
       ministry: o.ministry,
       role: o.role,
       is_admin: o.is_admin || 0
     });
   }
-  const row = db.prepare('SELECT id FROM officers WHERE username = ?').get(o.username);
-  if (row) officerIds[o.username] = row.id;
+  const row = db.prepare('SELECT id FROM officers WHERE email = ?').get(o.email);
+  if (row) officerIds[legacyUsername] = row.id;
 }
-console.log(`  ✓ ${OFFICERS.length} officers (Andrea is admin)`);
+console.log(`  ✓ ${OFFICERS.length} officers (Andrea is admin) — login with email address`);
 
 // Programme assignments: every active officer gets every active programme by
 // default. Idempotent — INSERT OR IGNORE skips rows that already exist.
@@ -415,10 +420,13 @@ if (IS_PROD) {
   if (generatedPasswords.length) {
     console.log('\n=================================================================');
     console.log('  Random officer passwords were generated. SAVE THESE NOW:');
-    for (const { username, password } of generatedPasswords) {
-      console.log(`    ${username}: ${password}`);
+    for (const { email, password } of generatedPasswords) {
+      console.log(`    ${email}: ${password}`);
     }
-    console.log('  Set OFFICER_PASSWORD_<USERNAME> env vars next time to control them.');
+    console.log('  These are bootstrap passwords only — officers should sign in once,');
+    console.log('  then a password reset can be sent through the admin Users tab.');
+    console.log('  Set OFFICER_PASSWORD_<ENVKEY> env vars (ANDREA/TREVOR/JOY) next');
+    console.log('  time to control them.');
     console.log('=================================================================');
   }
   if (issuedClient && !process.env.INCOMING_API_KEY) {
@@ -433,8 +441,10 @@ if (IS_PROD) {
   console.log('\nDone. Try:');
   console.log('  npm start');
   console.log('  open http://localhost:3030');
-  console.log('\nOfficer logins:');
-  console.log('  andrea / andrea  (or trevor / trevor, joy / joy)');
+  console.log('\nOfficer logins (email + dev password):');
+  console.log('  andrea.best@barbados.gov.bb / andrea       (admin)');
+  console.log('  trevor.inniss@barbados.gov.bb / trevor');
+  console.log('  joy.greenidge@barbados.gov.bb / joy');
   console.log('\nForm-intake API key (dev only):');
   console.log(`  X-API-Key: ${issuedClient.plaintext}`);
   console.log('  Used by /api/webhooks/form-submitted. Rotate by re-running this script.');

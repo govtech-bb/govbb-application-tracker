@@ -351,7 +351,7 @@
     <div class="table-wrap">
       <table class="t" aria-label="Officers">
         <thead><tr>
-          <th>Name</th><th>Username</th><th>Email</th><th>Role</th><th>Admin?</th><th>Active?</th><th>Programmes</th><th></th>
+          <th>Name</th><th>Email</th><th>Ministry</th><th>Role</th><th>Admin?</th><th>Active?</th><th>Programmes</th><th></th>
         </tr></thead>
         <tbody id="users-tbody"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
       </table>
@@ -914,17 +914,17 @@ async function loadUsers() {
   state.officers = data.officers;
   tbody.innerHTML = state.officers.map(o => `
     <tr data-id="${o.id}">
-      <td><strong>${escapeHtml(o.name)}</strong><div class="dim" style="font-size:12px;color:var(--slate-500);">${escapeHtml(o.role)}</div></td>
-      <td class="code">${escapeHtml(o.username)}</td>
-      <td>${escapeHtml(o.email)}</td>
+      <td><strong>${escapeHtml(o.name)}</strong></td>
+      <td class="code">${escapeHtml(o.email)}</td>
       <td class="dim">${escapeHtml(o.ministry)}</td>
+      <td class="dim">${escapeHtml(o.role)}</td>
       <td>${o.is_admin ? '<span class="pill pill-on">Admin</span>' : '<span class="dim">—</span>'}</td>
       <td>${o.is_active ? '<span class="pill pill-on">Active</span>' : '<span class="pill pill-closed">Inactive</span>'}</td>
       <td class="dim">${o.programme_count} of ${state.programmes.length || '—'}</td>
       <td class="actions">
         <button class="btn btn-sm" data-action="edit">Edit</button>
         <button class="btn btn-sm" data-action="programmes">Programmes</button>
-        <button class="btn btn-sm" data-action="password">Password</button>
+        <button class="btn btn-sm" data-action="reset">Send reset email</button>
       </td>
     </tr>
   `).join('');
@@ -936,9 +936,18 @@ async function loadUsers() {
       const o = state.officers.find(x => x.id === id);
       if (action === 'edit') openEditUser(o);
       if (action === 'programmes') openOfficerProgrammes(o);
-      if (action === 'password') openSetPassword(o);
+      if (action === 'reset') sendPasswordReset(o);
     });
   });
+}
+
+async function sendPasswordReset(officer) {
+  if (!confirm(`Send a password reset email to ${officer.email}? The link is valid for 24 hours.`)) return;
+  try {
+    const data = await api('POST', '/api/admin/officers/' + officer.id + '/password-reset');
+    const via = data.delivered_via === 'resend' ? 'sent via Resend' : 'written to disk only (no email provider configured)';
+    alert(`Password reset email ${via} to ${data.email_sent_to}. The link is valid for ${data.expires_in_hours} hours.`);
+  } catch (e) { alert(e.message); }
 }
 
 document.getElementById('user-new').addEventListener('click', () => openEditUser(null));
@@ -949,35 +958,29 @@ function openEditUser(officer) {
     title: isNew ? 'Add user' : `Edit ${officer.name}`,
     body: `
       <form id="user-form" novalidate>
+        ${isNew ? `<div class="hint" style="color:var(--slate-600);font-size:13px;margin-bottom:14px;background:var(--accent-soft);border:1px solid #c7d2fe;padding:10px 12px;border-radius:6px;">
+          The new user will receive an email with a link to set their own password. The link is valid for 24 hours.
+        </div>` : ''}
         <div class="field-row">
-          <div class="field">
-            <label>Username ${isNew ? '<span style="color:var(--red);">*</span>' : '<span style="color:var(--slate-500);font-weight:500;">(can\'t change)</span>'}</label>
-            <input type="text" name="username" value="${escapeHtml(officer ? officer.username : '')}" ${isNew ? '' : 'disabled'} required>
-          </div>
           <div class="field">
             <label>Name *</label>
             <input type="text" name="name" value="${escapeHtml(officer ? officer.name : '')}" required>
           </div>
+          <div class="field">
+            <label>Email ${isNew ? '<span style="color:var(--red);">* (this is their login)</span>' : '<span style="color:var(--slate-500);font-weight:500;">(can\'t change)</span>'}</label>
+            <input type="email" name="email" value="${escapeHtml(officer ? officer.email : '')}" ${isNew ? '' : 'disabled'} required>
+          </div>
         </div>
         <div class="field-row">
-          <div class="field">
-            <label>Email *</label>
-            <input type="email" name="email" value="${escapeHtml(officer ? officer.email : '')}" required>
-          </div>
           <div class="field">
             <label>Ministry *</label>
             <input type="text" name="ministry" value="${escapeHtml(officer ? officer.ministry : 'MYSCE')}" required>
           </div>
+          <div class="field">
+            <label>Role *</label>
+            <input type="text" name="role" value="${escapeHtml(officer ? officer.role : '')}" placeholder="e.g. YDP Officer" required>
+          </div>
         </div>
-        <div class="field">
-          <label>Role *</label>
-          <input type="text" name="role" value="${escapeHtml(officer ? officer.role : '')}" placeholder="e.g. YDP Officer" required>
-        </div>
-        ${isNew ? `
-        <div class="field">
-          <label>Initial password * <span style="color:var(--slate-500);font-weight:500;">(min 8 chars)</span></label>
-          <input type="password" name="password" minlength="8" required>
-        </div>` : ''}
         <div class="field-row">
           <label class="check"><input type="checkbox" name="is_admin" ${officer && officer.is_admin ? 'checked' : ''}> Admin (can manage users, programmes, see audit log)</label>
           ${isNew ? '' : `<label class="check"><input type="checkbox" name="is_active" ${officer.is_active ? 'checked' : ''} ${me && officer.id === me.id ? 'disabled' : ''}> Active (can sign in)</label>`}
@@ -987,7 +990,7 @@ function openEditUser(officer) {
     `,
     footer: `
       <button class="btn" id="user-cancel">Cancel</button>
-      <button class="btn btn-primary" id="user-save">${isNew ? 'Add user' : 'Save changes'}</button>
+      <button class="btn btn-primary" id="user-save">${isNew ? 'Add user and email them' : 'Save changes'}</button>
     `,
     onMount: () => {
       document.getElementById('user-cancel').addEventListener('click', closeModal);
@@ -1000,52 +1003,21 @@ function openEditUser(officer) {
         const errEl = document.getElementById('user-error');
         errEl.hidden = true;
         try {
-          if (isNew) await api('POST', '/api/admin/officers', body);
-          else {
-            // Don't send the disabled username field; backend ignores anyway.
-            const { username, ...payload } = body;
+          if (isNew) {
+            const data = await api('POST', '/api/admin/officers', body);
+            closeModal();
+            await loadUsers();
+            const via = data.setup_email && data.setup_email.delivered_via === 'resend' ? 'sent via Resend' : 'written to disk only (no email provider configured)';
+            alert(`User added. Setup email ${via} to ${body.email}.`);
+          } else {
+            const { email, ...payload } = body;
             await api('PATCH', '/api/admin/officers/' + officer.id, payload);
+            closeModal();
+            await loadUsers();
           }
-          closeModal();
-          await loadUsers();
         } catch (e) {
           errEl.textContent = e.message; errEl.hidden = false;
         }
-      });
-    }
-  });
-}
-
-function openSetPassword(officer) {
-  openModal({
-    title: `Reset password for ${officer.name}`,
-    body: `
-      <div class="hint" style="color:var(--slate-600);font-size:13px;margin-bottom:12px;">
-        The new password takes effect immediately. The user is not emailed — share it with them through a secure channel.
-      </div>
-      <form id="pw-form" novalidate>
-        <div class="field">
-          <label>New password * <span style="color:var(--slate-500);font-weight:500;">(min 8 chars)</span></label>
-          <input type="password" name="password" minlength="8" required>
-        </div>
-        <div id="pw-error" class="error-flash" hidden></div>
-      </form>
-    `,
-    footer: `
-      <button class="btn" id="pw-cancel">Cancel</button>
-      <button class="btn btn-primary" id="pw-save">Set password</button>
-    `,
-    onMount: () => {
-      document.getElementById('pw-cancel').addEventListener('click', closeModal);
-      document.getElementById('pw-save').addEventListener('click', async () => {
-        const pw = document.getElementById('pw-form').password.value;
-        const errEl = document.getElementById('pw-error');
-        errEl.hidden = true;
-        try {
-          await api('POST', '/api/admin/officers/' + officer.id + '/password', { password: pw });
-          closeModal();
-          alert('Password updated. Share it with ' + officer.name + ' through a secure channel.');
-        } catch (e) { errEl.textContent = e.message; errEl.hidden = false; }
       });
     }
   });
@@ -1217,6 +1189,7 @@ const AUDIT_ACTIONS = [
   'application.intake', 'application.status_change', 'application.assign',
   'officer.create', 'officer.update', 'officer.deactivate', 'officer.password_reset', 'officer.programmes_update',
   'programme.create', 'programme.update', 'programme.toggle_accepting',
+  'password.set_success', 'password.set_fail',
   'test_email.send'
 ];
 

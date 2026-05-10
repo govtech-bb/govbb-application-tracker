@@ -30,7 +30,7 @@ The console output prints all the URLs you care about. To start over with fresh 
 
 1. <http://localhost:3030/> — citizen tracker landing. The list of "sample codes" at the bottom is taken from seeded data; click any to see the status page.
 2. <http://localhost:3030/submit-test> — submit a test application. Pick a programme, leave the defaults, hit Submit. You'll be redirected to the confirmation page, and a confirmation email will be written to `mail-out/`.
-3. <http://localhost:3030/officer/login> — sign in as `andrea / andrea` (admin) or `trevor / trevor`, `joy / joy` (regular officers).
+3. <http://localhost:3030/officer/login> — sign in with the seeded email + password: `andrea.best@barbados.gov.bb / andrea` (admin), or `trevor.inniss@barbados.gov.bb / trevor`, `joy.greenidge@barbados.gov.bb / joy` (regular officers).
 4. In the officer console, click any row → the drawer opens with the full timeline. Change the status, add a citizen-facing message, save. A status-change email is written to `mail-out/`. Switch back to the citizen tab and refresh — the new status is there.
 5. As Andrea, click the **Dashboard**, **Users**, **Programmes**, and **Audit log** tabs at the top — these are admin-only and explained below.
 
@@ -51,6 +51,33 @@ There are two officer roles:
 ### Self-protection: admins can't lock everyone out
 
 The PATCH `/api/admin/officers/:id` endpoint refuses to deactivate the calling admin or revoke their own admin flag. To remove an admin, sign in as a different admin (or, in the worst case, set `is_admin = 1` directly in the DB).
+
+### Login is by email address
+
+Officers sign in with their email address, not a short username. The `username` column is preserved in the schema (for back-compat) but is always kept in sync with `email` on every boot — the migration runs automatically and is idempotent. Existing passwords are not affected.
+
+### Password setup flow
+
+When an admin creates a new officer, the system:
+
+1. Creates the row with an unusable random placeholder hash.
+2. Generates a single-use token (32 bytes of crypto-strong random, base64url-encoded).
+3. Stores only the SHA-256 hash of the token in `password_reset_tokens`.
+4. Emails the user a `/set-password/<plaintext-token>` link, valid for 24 hours (configurable via `PASSWORD_TOKEN_TTL_HOURS`).
+
+The user clicks the link, sees their name and email so they know it's the right account, and sets a password. The page validates against the same complexity rules as the server (live hints + a strength meter) and rejects:
+
+- Anything under 12 characters
+- Variants of "password" (with regex matching like `passw0rd` and `Password1234`)
+- Digits-only passwords
+- Single-character repeats
+- Long keyboard runs and other base words (`qwerty…`, `letmein…`, `welcome…`, etc.)
+- Two-stem repeats like `passwordpassword`
+- Passwords containing the user's email local-part (unless 20+ chars)
+
+Tokens are single-use: once a password is set, all the user's outstanding tokens are invalidated atomically. Replay attempts return a clear error and write a `password.set_fail` audit row.
+
+The admin "Send reset email" button on the Users tab triggers the same flow with `purpose: 'reset'`. The admin never sees or sets a password directly.
 
 ## Where the emails go
 
@@ -187,12 +214,17 @@ The repo ships with a Dockerfile and a `render.yaml` Blueprint, so deployment is
 All admin endpoints require an active session for an officer with `is_admin = 1`. They return `403` for regular officers and `401` for unauthenticated callers.
 
 ```
-GET    /api/admin/officers                    list all officers
-POST   /api/admin/officers                    create officer (auto-grants every programme)
-PATCH  /api/admin/officers/:id                update name / role / is_admin / is_active
-POST   /api/admin/officers/:id/password       admin password reset
-GET    /api/admin/officers/:id/programmes     programme assignments for one officer
-PUT    /api/admin/officers/:id/programmes     replace assignments (whole-set)
+GET    /api/admin/officers                       list all officers
+POST   /api/admin/officers                       create officer + email setup link
+PATCH  /api/admin/officers/:id                   update name / role / is_admin / is_active
+POST   /api/admin/officers/:id/password-reset    email a fresh password-reset link
+GET    /api/admin/officers/:id/programmes        programme assignments for one officer
+PUT    /api/admin/officers/:id/programmes        replace assignments (whole-set)
+
+# Public, token-protected
+GET    /api/password-rules                       complexity rules + token TTL
+GET    /api/password-token/:token                validate a token, returns officer name+email
+POST   /api/set-password                         body: {token, password} — sets new password
 
 GET    /api/admin/programmes                  list programmes with counts and accepting flag
 POST   /api/admin/programmes                  create programme (auto-grants to active officers)
@@ -213,7 +245,8 @@ application-tracker/
 ├── codes.js               Reference code generator
 ├── auth.js                Officer authentication + requireAdmin middleware
 ├── auditLog.js            Audit log helper (logAction, listAuditLog)
-├── notifications.js       Submission + status-change + test email
+├── passwords.js           Password complexity rules + setup-token issuance
+├── notifications.js       Submission + status-change + test + password-setup email
 ├── apikey.js              X-API-Key auth for the form-intake webhook
 ├── seed.js                Sample programmes/officers/applications
 ├── package.json
@@ -222,7 +255,8 @@ application-tracker/
 ├── index.html             Citizen tracker (path-routed SPA)
 ├── confirmation.html      "Application sent" page
 ├── officer.html           Officer console (Cases / Dashboard / Users / Programmes / Audit log)
-├── officer-login.html     Sign-in page
+├── officer-login.html     Sign-in page (email + password)
+├── set-password.html      Password setup / reset page (token in URL)
 ├── submit-test.html       Demo form (calls the webhook)
 ├── pilot-brief.md         Strategic brief
 └── README.md              This file
