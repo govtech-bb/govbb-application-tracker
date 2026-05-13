@@ -4,6 +4,7 @@ const fs = require('fs');
 const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
 
 const {
   pool,
@@ -62,6 +63,63 @@ app.use(session({
     maxAge: 1000 * 60 * 60 * 8
   }
 }));
+
+/* =========================================================
+   CSRF protection — Origin header verification.
+   All state-changing requests (POST/PUT/PATCH/DELETE) from browsers
+   include an Origin header. We reject requests whose Origin doesn't
+   match our expected host. API-key-authenticated webhooks are exempt
+   because they don't use cookies.
+   ========================================================= */
+const ALLOWED_ORIGINS = new Set(
+  (process.env.TRACKER_BASE_URL || `http://localhost:${PORT}`)
+    .split(',').map(s => s.trim().replace(/\/+$/, ''))
+);
+
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const origin = req.get('Origin');
+  if (!origin) return next();
+  if (ALLOWED_ORIGINS.has(origin)) return next();
+  return res.status(403).json({ error: 'Cross-origin request blocked' });
+});
+
+/* =========================================================
+   Rate limiters.
+   ========================================================= */
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Try again in 15 minutes.' }
+});
+
+const passwordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Try again later.' }
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Rate limit exceeded. Try again later.' }
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Try again later.' }
+});
+
+app.use('/api/', apiLimiter);
 
 /* =========================================================
    File-upload setup (multer + on-disk storage).
@@ -155,7 +213,7 @@ app.get('/api/password-rules', (req, res) => {
   res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
 });
 
-app.get('/api/password-token/:token', async (req, res) => {
+app.get('/api/password-token/:token', passwordLimiter, async (req, res) => {
   const t = await findValidToken(req.params.token);
   if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
   res.json({
@@ -166,7 +224,7 @@ app.get('/api/password-token/:token', async (req, res) => {
   });
 });
 
-app.post('/api/set-password', async (req, res) => {
+app.post('/api/set-password', passwordLimiter, async (req, res) => {
   const { token, password } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token and password required' });
 
@@ -202,7 +260,7 @@ function errorMessage(code) {
    Auth API
    ========================================================= */
 
-app.post('/api/officer/login', async (req, res) => {
+app.post('/api/officer/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   const officer = await authenticateOfficer(username, password);
@@ -426,7 +484,10 @@ app.get('/api/officer/applications/:id/uploads/:upload_id', requireOfficer, asyn
   `, [upId, appId]);
   const row = rows[0];
   if (!row) return res.status(404).json({ error: 'Upload not found' });
-  const fullPath = path.join(UPLOAD_DIR, String(appId), row.stored_filename);
+  const fullPath = path.resolve(UPLOAD_DIR, String(appId), row.stored_filename);
+  if (!fullPath.startsWith(path.resolve(UPLOAD_DIR))) {
+    return res.status(400).json({ error: 'Invalid file path' });
+  }
   if (!fs.existsSync(fullPath)) return res.status(410).json({ error: 'File is no longer on disk' });
 
   res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
@@ -450,7 +511,7 @@ app.get('/api/officer/applications/:id/uploads/:upload_id', requireOfficer, asyn
 
 const CODE_PATTERN = /^[A-Z][A-Z0-9_-]*-\d{4}-[A-Z0-9]{6,16}$/;
 
-app.post('/api/webhooks/form-submitted', requireApiKey, async (req, res) => {
+app.post('/api/webhooks/form-submitted', webhookLimiter, requireApiKey, async (req, res) => {
   const { code, programme_code, applicant, form_data, submitted_at } = req.body || {};
 
   if (typeof code !== 'string' || !CODE_PATTERN.test(code)) {

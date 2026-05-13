@@ -54,25 +54,26 @@ function requestMeta(req, extra = {}) {
 function safeParse(s) { try { return JSON.parse(s); } catch (_) { return null; } }
 
 async function listAuditLog({ limit = 50, before = null, action = null, target_kind = null, target_id = null } = {}) {
-  const where = [];
-  const params = [];
-  let n = 1;
-  if (before != null) { where.push(`id < $${n++}`); params.push(Number(before)); }
-  if (action) { where.push(`action = $${n++}`); params.push(action); }
-  if (target_kind) { where.push(`target_kind = $${n++}`); params.push(target_kind); }
-  if (target_id != null) { where.push(`target_id = $${n++}`); params.push(Number(target_id)); }
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  params.push(Math.max(1, Math.min(500, Number(limit) || 50)));
+  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50));
   const { rows } = await pool.query(`
     SELECT id, actor_officer_id, actor_label, action,
            target_kind, target_id,
            before_json, after_json, metadata_json,
            created_at
     FROM audit_log
-    ${whereSql}
+    WHERE ($1::int IS NULL OR id < $1)
+      AND ($2::text IS NULL OR action = $2)
+      AND ($3::text IS NULL OR target_kind = $3)
+      AND ($4::int IS NULL OR target_id = $4)
     ORDER BY id DESC
-    LIMIT $${n}
-  `, params);
+    LIMIT $5
+  `, [
+    before != null ? Number(before) : null,
+    action || null,
+    target_kind || null,
+    target_id != null ? Number(target_id) : null,
+    safeLimit
+  ]);
   return rows.map(r => ({
     ...r,
     before: r.before_json ? safeParse(r.before_json) : null,

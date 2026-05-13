@@ -3,13 +3,19 @@ const pg = require('pg');
 pg.types.setTypeParser(1114, str => str);
 pg.types.setTypeParser(1184, str => str);
 
+function sslConfig() {
+  if (process.env.DATABASE_SSL === 'false') return false;
+  const url = process.env.DATABASE_URL || '';
+  if (!url || url.includes('localhost') || url.includes('127.0.0.1')) return false;
+  if (process.env.DATABASE_CA_CERT) {
+    return { ca: process.env.DATABASE_CA_CERT, rejectUnauthorized: true };
+  }
+  return { rejectUnauthorized: true };
+}
+
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/govbb_tracker',
-  ssl: process.env.DATABASE_SSL === 'false'
-    ? false
-    : (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('localhost')
-      ? { rejectUnauthorized: false }
-      : false)
+  ssl: sslConfig()
 });
 
 async function initDb() {

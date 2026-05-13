@@ -354,22 +354,23 @@ async function seed() {
   if (IS_PROD) {
     console.log('\nDone. Production seed complete.');
     if (generatedPasswords.length) {
+      const credsPath = path.join(process.env.TRACKER_DATA_DIR || '.', '.bootstrap-credentials');
+      const lines = generatedPasswords.map(({ email, password }) => `${email}: ${password}`);
+      fs.writeFileSync(credsPath, lines.join('\n') + '\n', { mode: 0o600 });
       console.log('\n=================================================================');
-      console.log('  Random officer passwords were generated. SAVE THESE NOW:');
-      for (const { email, password } of generatedPasswords) {
-        console.log(`    ${email}: ${password}`);
-      }
-      console.log('  These are bootstrap passwords only — officers should sign in once,');
-      console.log('  then a password reset can be sent through the admin Users tab.');
-      console.log('  Set OFFICER_PASSWORD_<ENVKEY> env vars (ANDREA/TREVOR/JOY) next');
-      console.log('  time to control them.');
+      console.log('  Random officer passwords were generated.');
+      console.log(`  Written to: ${credsPath} (mode 600)`);
+      console.log('  Read that file, save the credentials, then delete it.');
+      console.log('  Set OFFICER_PASSWORD_<ENVKEY> env vars next time to control them.');
       console.log('=================================================================');
     }
     if (issuedClient && !process.env.INCOMING_API_KEY) {
+      const keyPath = path.join(process.env.TRACKER_DATA_DIR || '.', '.bootstrap-api-key');
+      fs.writeFileSync(keyPath, issuedClient.plaintext + '\n', { mode: 0o600 });
       console.log('\n=================================================================');
       console.log('  An API key for the alpha.gov.bb forms processor was generated.');
-      console.log('  SAVE THIS NOW — it cannot be recovered:');
-      console.log(`    ${issuedClient.plaintext}`);
+      console.log(`  Written to: ${keyPath} (mode 600)`);
+      console.log('  Read that file, save the key, then delete it.');
       console.log('  Set INCOMING_API_KEY in your env to control it next time.');
       console.log('=================================================================');
     }
