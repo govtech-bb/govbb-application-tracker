@@ -10,11 +10,10 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "cookie-parser": "^1.4.7",
-    "csrf-csrf": "^4.0.3",
     "express": "^4.21.0",
     "express-rate-limit": "^8.5.1",
     "express-session": "^1.18.0",
+    "lusca": "^1.7.0",
     "multer": "^2.1.1",
     "pg": "^8.20.0"
   },
