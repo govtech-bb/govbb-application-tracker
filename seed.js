@@ -1,29 +1,6 @@
-/**
- * Seed / initialise the database.
- *
- * Behaviour depends on NODE_ENV:
- *
- *   Development (default):
- *     - Upserts programmes, officers, API client (with the dev key).
- *     - Wipes applications/applicants/status_events/notifications and re-creates
- *       a small set of sample applications across every status.
- *
- *   Production (NODE_ENV=production):
- *     - Upserts programmes, officers, API client. NEVER touches application
- *       data — running this on a live deploy is safe.
- *     - Officer passwords come from OFFICER_PASSWORD_<USERNAME> env vars.
- *       If unset, a random password is generated and printed to logs ONCE
- *       so the first deploy isn't blocked. Save it.
- *     - API key comes from INCOMING_API_KEY env var. If unset, generates one
- *       and prints once.
- *
- * Run with:     node seed.js
- * Reset (dev):  npm run reset
- */
-
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { db, insertStatusEvent } = require('./db');
+const { pool, initDb, insertStatusEvent } = require('./db');
 const { generateUniqueCode } = require('./codes');
 const { issueKey } = require('./apikey');
 
@@ -82,9 +59,6 @@ const PROGRAMMES = [
   }
 ];
 
-// Officers are identified by email — that's their login. The optional
-// `envKey` is just a stable handle for the OFFICER_PASSWORD_<KEY> env var
-// and must not change between deploys (otherwise prod credentials get lost).
 const OFFICERS = [
   { envKey: 'ANDREA', password: 'andrea',  name: 'Andrea Best',     email: 'andrea.best@barbados.gov.bb',     ministry: 'MYSCE', role: 'Senior YDP Officer',       is_admin: 1 },
   { envKey: 'TREVOR', password: 'trevor',  name: 'Trevor Inniss',   email: 'trevor.inniss@barbados.gov.bb',   ministry: 'MYSCE', role: 'YDP Officer',              is_admin: 0 },
@@ -92,7 +66,6 @@ const OFFICERS = [
 ];
 
 const APPLICANTS = [
-  // Reference codes will be generated; seed picks programme + status + timeline.
   { programme: 'BYAC',     name: 'Kareem Walcott',       email: 'kareem.walcott@example.com',       phone: '(246) 555-0102',
     submittedAt: '2026-04-22 09:14',
     form_data: {
@@ -221,231 +194,202 @@ const APPLICANTS = [
   }
 ];
 
-/* =========================================================
-   Run
-   ========================================================= */
+async function seed() {
+  await initDb();
 
-console.log(`Seeding GovBB tracker pilot database${IS_PROD ? ' (production mode)' : ''}...`);
+  console.log(`Seeding GovBB tracker pilot database${IS_PROD ? ' (production mode)' : ''}...`);
 
-if (!IS_PROD) {
-  // Dev only: wipe application data so the seed is reproducible.
-  db.exec(`
-    DELETE FROM notifications;
-    DELETE FROM status_events;
-    DELETE FROM applications;
-    DELETE FROM applicants;
-  `);
-} else {
-  console.log('  · production mode — application data is NOT touched.');
-}
+  if (!IS_PROD) {
+    await pool.query(`
+      DELETE FROM uploads;
+      DELETE FROM notifications;
+      DELETE FROM status_events;
+      DELETE FROM applications;
+      DELETE FROM applicants;
+    `);
+  } else {
+    console.log('  · production mode — application data is NOT touched.');
+  }
 
-// Programmes
-const upsertProgramme = db.prepare(`
-  INSERT INTO programmes (code, name, ministry, default_sla_days, allowed_statuses, contact_email, contact_phone)
-  VALUES (@code, @name, @ministry, @default_sla_days, @allowed_statuses, @contact_email, @contact_phone)
-  ON CONFLICT(code) DO UPDATE SET
-    name = excluded.name,
-    ministry = excluded.ministry,
-    default_sla_days = excluded.default_sla_days,
-    allowed_statuses = excluded.allowed_statuses,
-    contact_email = excluded.contact_email,
-    contact_phone = excluded.contact_phone
-`);
+  // Programmes
+  for (const p of PROGRAMMES) {
+    await pool.query(`
+      INSERT INTO programmes (code, name, ministry, default_sla_days, allowed_statuses, contact_email, contact_phone)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT(code) DO UPDATE SET
+        name = EXCLUDED.name,
+        ministry = EXCLUDED.ministry,
+        default_sla_days = EXCLUDED.default_sla_days,
+        allowed_statuses = EXCLUDED.allowed_statuses,
+        contact_email = EXCLUDED.contact_email,
+        contact_phone = EXCLUDED.contact_phone
+    `, [p.code, p.name, p.ministry, p.default_sla_days, JSON.stringify(STATUSES), p.contact_email, p.contact_phone]);
+  }
+  console.log(`  ✓ ${PROGRAMMES.length} programmes`);
 
-for (const p of PROGRAMMES) {
-  upsertProgramme.run({
-    ...p,
-    allowed_statuses: JSON.stringify(STATUSES)
-  });
-}
-console.log(`  ✓ ${PROGRAMMES.length} programmes`);
+  // Officers
+  const officerIds = {};
+  const generatedPasswords = [];
+  for (const o of OFFICERS) {
+    let plaintext = o.password;
+    const legacyUsername = o.envKey.toLowerCase();
+    const { rows: existRows } = await pool.query(
+      'SELECT id FROM officers WHERE email = $1 OR username = $2', [o.email, legacyUsername]
+    );
+    const existing = existRows[0];
 
-// Officers — upserts password (when supplied), name/email/ministry/role,
-// AND is_admin/is_active so the role assignment in the seed always wins.
-// `username` is set to email (login identifier).
-const upsertOfficerWithPassword = db.prepare(`
-  INSERT INTO officers (username, password_hash, name, email, ministry, role, is_admin, is_active)
-  VALUES (@email, @password_hash, @name, @email, @ministry, @role, @is_admin, 1)
-  ON CONFLICT(username) DO UPDATE SET
-    password_hash = excluded.password_hash,
-    username = excluded.username,
-    name = excluded.name,
-    email = excluded.email,
-    ministry = excluded.ministry,
-    role = excluded.role,
-    is_admin = excluded.is_admin,
-    is_active = 1
-`);
-const updateOfficerNoPassword = db.prepare(`
-  UPDATE officers
-     SET username = @email, name = @name, email = @email, ministry = @ministry, role = @role,
-         is_admin = @is_admin, is_active = 1
-   WHERE email = @email OR username = @legacy_username
-`);
-
-const officerIds = {};
-const generatedPasswords = []; // for printing at the end in prod
-for (const o of OFFICERS) {
-  let plaintext = o.password;
-  // Find the existing row by email OR by the legacy short username (e.g. 'andrea')
-  // so this seed is back-compat with pre-email-login databases.
-  const legacyUsername = o.envKey.toLowerCase();
-  const existing = db.prepare('SELECT id FROM officers WHERE email = ? OR username = ?').get(o.email, legacyUsername);
-
-  if (IS_PROD) {
-    const envVar = 'OFFICER_PASSWORD_' + o.envKey;
-    plaintext = process.env[envVar];
-    if (!plaintext) {
-      if (existing) {
-        // Existing row + no override: leave the password alone, just refresh metadata.
-        plaintext = null;
-      } else {
-        plaintext = 'pw_' + crypto.randomBytes(9).toString('base64url');
-        generatedPasswords.push({ email: o.email, password: plaintext });
+    if (IS_PROD) {
+      const envVar = 'OFFICER_PASSWORD_' + o.envKey;
+      plaintext = process.env[envVar];
+      if (!plaintext) {
+        if (existing) {
+          plaintext = null;
+        } else {
+          plaintext = 'pw_' + crypto.randomBytes(9).toString('base64url');
+          generatedPasswords.push({ email: o.email, password: plaintext });
+        }
       }
     }
+    if (plaintext) {
+      await pool.query(`
+        INSERT INTO officers (username, password_hash, name, email, ministry, role, is_admin, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+        ON CONFLICT(username) DO UPDATE SET
+          password_hash = EXCLUDED.password_hash,
+          username = EXCLUDED.username,
+          name = EXCLUDED.name,
+          email = EXCLUDED.email,
+          ministry = EXCLUDED.ministry,
+          role = EXCLUDED.role,
+          is_admin = EXCLUDED.is_admin,
+          is_active = 1
+      `, [o.email, bcrypt.hashSync(plaintext, 10), o.name, o.email, o.ministry, o.role, o.is_admin || 0]);
+    } else {
+      await pool.query(`
+        UPDATE officers
+        SET username = $1, name = $2, email = $3, ministry = $4, role = $5,
+            is_admin = $6, is_active = 1
+        WHERE email = $1 OR username = $7
+      `, [o.email, o.name, o.email, o.ministry, o.role, o.is_admin || 0, legacyUsername]);
+    }
+    const { rows: idRows } = await pool.query('SELECT id FROM officers WHERE email = $1', [o.email]);
+    if (idRows[0]) officerIds[legacyUsername] = idRows[0].id;
   }
-  if (plaintext) {
-    upsertOfficerWithPassword.run({
-      email: o.email,
-      password_hash: bcrypt.hashSync(plaintext, 10),
-      name: o.name,
-      ministry: o.ministry,
-      role: o.role,
-      is_admin: o.is_admin || 0
-    });
+  console.log(`  ✓ ${OFFICERS.length} officers (Andrea is admin) — login with email address`);
+
+  // Programme assignments
+  const { rows: allProgrammeRows } = await pool.query('SELECT id FROM programmes');
+  const allProgrammeIds = allProgrammeRows.map(r => r.id);
+  const { rows: allOfficerRows } = await pool.query('SELECT id FROM officers WHERE is_active = 1');
+  const allOfficerIds = allOfficerRows.map(r => r.id);
+  let assignmentCount = 0;
+  for (const oid of allOfficerIds) {
+    for (const pid of allProgrammeIds) {
+      const r = await pool.query(`
+        INSERT INTO officer_programmes (officer_id, programme_id, granted_by_officer_id)
+        VALUES ($1, $2, NULL)
+        ON CONFLICT DO NOTHING
+      `, [oid, pid]);
+      assignmentCount += r.rowCount;
+    }
+  }
+  if (assignmentCount > 0) {
+    console.log(`  ✓ ${assignmentCount} new programme assignments (officer × programme)`);
+  }
+
+  // Applications
+  if (!IS_PROD) {
+    for (const a of APPLICANTS) {
+      const { rows: progRows } = await pool.query('SELECT id FROM programmes WHERE code = $1', [a.programme]);
+      const programme = progRows[0];
+      if (!programme) { console.error(`Skip ${a.name}: unknown programme ${a.programme}`); continue; }
+
+      const { rows: appRows } = await pool.query(
+        'INSERT INTO applicants (name, email, phone) VALUES ($1, $2, $3) RETURNING id',
+        [a.name, a.email, a.phone]
+      );
+      const applicantId = appRows[0].id;
+      const code = await generateUniqueCode(pool, a.programme);
+      const last = a.timeline[a.timeline.length - 1];
+
+      const { rows: insertRows } = await pool.query(`
+        INSERT INTO applications (code, programme_id, applicant_id, current_status, current_status_at, assigned_officer_id, form_data, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id
+      `, [code, programme.id, applicantId, last.status, last.at,
+          a.assignedTo ? officerIds[a.assignedTo] : null,
+          JSON.stringify(a.form_data || {}), a.submittedAt]);
+      const appId = insertRows[0].id;
+
+      for (const ev of a.timeline) {
+        await pool.query(`
+          INSERT INTO status_events (application_id, status, citizen_message, internal_note, by_officer_id, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [appId, ev.status, ev.citizen_message || null, ev.internal_note || null,
+            ev.officer ? officerIds[ev.officer] : null, ev.at]);
+      }
+
+      console.log(`  ✓ ${code}  ${a.programme.padEnd(8)}  ${a.name.padEnd(22)}  → ${last.status}`);
+    }
+  }
+
+  // API client
+  let issuedClient;
+  if (IS_PROD) {
+    const { rows: apiRows } = await pool.query(
+      `SELECT id FROM api_clients WHERE name = $1`, ['alpha.gov.bb forms processor']
+    );
+    if (apiRows.length === 0) {
+      const supplied = process.env.INCOMING_API_KEY;
+      issuedClient = await issueKey('alpha.gov.bb forms processor', 'webhooks:form-submitted', supplied);
+    }
   } else {
-    updateOfficerNoPassword.run({
-      email: o.email,
-      legacy_username: legacyUsername,
-      name: o.name,
-      ministry: o.ministry,
-      role: o.role,
-      is_admin: o.is_admin || 0
-    });
+    await pool.query('DELETE FROM api_clients');
+    const DEV_KEY_PLAINTEXT = 'dev-key-alpha-gov-bb-forms-DO-NOT-USE-IN-PROD';
+    issuedClient = await issueKey('alpha.gov.bb forms processor (dev)', 'webhooks:form-submitted', DEV_KEY_PLAINTEXT);
   }
-  const row = db.prepare('SELECT id FROM officers WHERE email = ?').get(o.email);
-  if (row) officerIds[legacyUsername] = row.id;
-}
-console.log(`  ✓ ${OFFICERS.length} officers (Andrea is admin) — login with email address`);
 
-// Programme assignments: every active officer gets every active programme by
-// default. Idempotent — INSERT OR IGNORE skips rows that already exist.
-const assign = db.prepare(`
-  INSERT OR IGNORE INTO officer_programmes (officer_id, programme_id, granted_by_officer_id)
-  VALUES (?, ?, NULL)
-`);
-const allProgrammeIds = db.prepare('SELECT id FROM programmes').all().map(r => r.id);
-const allOfficerIds = db.prepare('SELECT id FROM officers WHERE is_active = 1').all().map(r => r.id);
-let assignmentCount = 0;
-for (const oid of allOfficerIds) {
-  for (const pid of allProgrammeIds) {
-    const r = assign.run(oid, pid);
-    assignmentCount += r.changes;
-  }
-}
-if (assignmentCount > 0) {
-  console.log(`  ✓ ${assignmentCount} new programme assignments (officer × programme)`);
-}
+  console.log(`\n  ✓ ${IS_PROD ? 'API client checked' : '1 API client (dev)'}`);
 
-// Applications
-const insertApplicant = db.prepare(`
-  INSERT INTO applicants (name, email, phone) VALUES (?, ?, ?)
-`);
-const insertApplication = db.prepare(`
-  INSERT INTO applications (code, programme_id, applicant_id, current_status, current_status_at, assigned_officer_id, form_data, created_at)
-  VALUES (@code, @programme_id, @applicant_id, @current_status, @current_status_at, @assigned_officer_id, @form_data, @created_at)
-`);
-const insertEventRaw = db.prepare(`
-  INSERT INTO status_events (application_id, status, citizen_message, internal_note, by_officer_id, created_at)
-  VALUES (@application_id, @status, @citizen_message, @internal_note, @by_officer_id, @created_at)
-`);
-
-if (!IS_PROD) {
-  // Dev only: insert sample applications.
-  for (const a of APPLICANTS) {
-    const programme = db.prepare('SELECT id FROM programmes WHERE code = ?').get(a.programme);
-    if (!programme) { console.error(`Skip ${a.name}: unknown programme ${a.programme}`); continue; }
-
-    const applicantId = insertApplicant.run(a.name, a.email, a.phone).lastInsertRowid;
-    const code = generateUniqueCode(db, a.programme);
-    const last = a.timeline[a.timeline.length - 1];
-
-    const appId = insertApplication.run({
-      code,
-      programme_id: programme.id,
-      applicant_id: applicantId,
-      current_status: last.status,
-      current_status_at: last.at,
-      assigned_officer_id: a.assignedTo ? officerIds[a.assignedTo] : null,
-      form_data: JSON.stringify(a.form_data || {}),
-      created_at: a.submittedAt
-    }).lastInsertRowid;
-
-    for (const ev of a.timeline) {
-      insertEventRaw.run({
-        application_id: appId,
-        status: ev.status,
-        citizen_message: ev.citizen_message || null,
-        internal_note: ev.internal_note || null,
-        by_officer_id: ev.officer ? officerIds[ev.officer] : null,
-        created_at: ev.at
-      });
+  if (IS_PROD) {
+    console.log('\nDone. Production seed complete.');
+    if (generatedPasswords.length) {
+      console.log('\n=================================================================');
+      console.log('  Random officer passwords were generated. SAVE THESE NOW:');
+      for (const { email, password } of generatedPasswords) {
+        console.log(`    ${email}: ${password}`);
+      }
+      console.log('  These are bootstrap passwords only — officers should sign in once,');
+      console.log('  then a password reset can be sent through the admin Users tab.');
+      console.log('  Set OFFICER_PASSWORD_<ENVKEY> env vars (ANDREA/TREVOR/JOY) next');
+      console.log('  time to control them.');
+      console.log('=================================================================');
     }
-
-    console.log(`  ✓ ${code}  ${a.programme.padEnd(8)}  ${a.name.padEnd(22)}  → ${last.status}`);
-  }
-}
-
-// API client. In dev: fixed key, recreated each run. In prod: env-supplied
-// or generated once on first run.
-let issuedClient;
-if (IS_PROD) {
-  const existing = db.prepare(`SELECT id FROM api_clients WHERE name = ?`)
-    .get('alpha.gov.bb forms processor');
-  if (!existing) {
-    const supplied = process.env.INCOMING_API_KEY;
-    issuedClient = issueKey('alpha.gov.bb forms processor', 'webhooks:form-submitted', supplied);
-  }
-} else {
-  db.prepare('DELETE FROM api_clients').run();
-  const DEV_KEY_PLAINTEXT = 'dev-key-alpha-gov-bb-forms-DO-NOT-USE-IN-PROD';
-  issuedClient = issueKey('alpha.gov.bb forms processor (dev)', 'webhooks:form-submitted', DEV_KEY_PLAINTEXT);
-}
-
-console.log(`\n  ✓ ${IS_PROD ? 'API client checked' : '1 API client (dev)'}`);
-
-if (IS_PROD) {
-  console.log('\nDone. Production seed complete.');
-  if (generatedPasswords.length) {
-    console.log('\n=================================================================');
-    console.log('  Random officer passwords were generated. SAVE THESE NOW:');
-    for (const { email, password } of generatedPasswords) {
-      console.log(`    ${email}: ${password}`);
+    if (issuedClient && !process.env.INCOMING_API_KEY) {
+      console.log('\n=================================================================');
+      console.log('  An API key for the alpha.gov.bb forms processor was generated.');
+      console.log('  SAVE THIS NOW — it cannot be recovered:');
+      console.log(`    ${issuedClient.plaintext}`);
+      console.log('  Set INCOMING_API_KEY in your env to control it next time.');
+      console.log('=================================================================');
     }
-    console.log('  These are bootstrap passwords only — officers should sign in once,');
-    console.log('  then a password reset can be sent through the admin Users tab.');
-    console.log('  Set OFFICER_PASSWORD_<ENVKEY> env vars (ANDREA/TREVOR/JOY) next');
-    console.log('  time to control them.');
-    console.log('=================================================================');
+  } else {
+    console.log('\nDone. Try:');
+    console.log('  npm start');
+    console.log('  open http://localhost:3030');
+    console.log('\nOfficer logins (email + dev password):');
+    console.log('  andrea.best@barbados.gov.bb / andrea       (admin)');
+    console.log('  trevor.inniss@barbados.gov.bb / trevor');
+    console.log('  joy.greenidge@barbados.gov.bb / joy');
+    console.log('\nForm-intake API key (dev only):');
+    console.log(`  X-API-Key: ${issuedClient.plaintext}`);
+    console.log('  Used by /api/webhooks/form-submitted. Rotate by re-running this script.');
   }
-  if (issuedClient && !process.env.INCOMING_API_KEY) {
-    console.log('\n=================================================================');
-    console.log('  An API key for the alpha.gov.bb forms processor was generated.');
-    console.log('  SAVE THIS NOW — it cannot be recovered:');
-    console.log(`    ${issuedClient.plaintext}`);
-    console.log('  Set INCOMING_API_KEY in your env to control it next time.');
-    console.log('=================================================================');
-  }
-} else {
-  console.log('\nDone. Try:');
-  console.log('  npm start');
-  console.log('  open http://localhost:3030');
-  console.log('\nOfficer logins (email + dev password):');
-  console.log('  andrea.best@barbados.gov.bb / andrea       (admin)');
-  console.log('  trevor.inniss@barbados.gov.bb / trevor');
-  console.log('  joy.greenidge@barbados.gov.bb / joy');
-  console.log('\nForm-intake API key (dev only):');
-  console.log(`  X-API-Key: ${issuedClient.plaintext}`);
-  console.log('  Used by /api/webhooks/form-submitted. Rotate by re-running this script.');
+
+  await pool.end();
 }
+
+seed().catch(e => {
+  console.error('Seed failed:', e);
+  process.exit(1);
+});
