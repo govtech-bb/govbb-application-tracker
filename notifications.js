@@ -27,7 +27,13 @@ const path = require('path');
 const { pool } = require('./db');
 
 const MAIL_DIR = process.env.MAIL_OUT_DIR || path.join(__dirname, 'mail-out');
-if (!fs.existsSync(MAIL_DIR)) fs.mkdirSync(MAIL_DIR, { recursive: true });
+let MAIL_DIR_WRITABLE = false;
+try {
+  if (!fs.existsSync(MAIL_DIR)) fs.mkdirSync(MAIL_DIR, { recursive: true });
+  MAIL_DIR_WRITABLE = true;
+} catch (_) {
+  // Vercel / read-only filesystem — skip disk writes, rely on Resend for delivery.
+}
 
 const TRACKER_BASE = process.env.TRACKER_BASE_URL || 'http://localhost:3030';
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -212,6 +218,7 @@ async function sendViaResend({ to, subject, text, html }) {
 }
 
 function writeEmailToDisk({ to, subject, text, html, application_id, kind }) {
+  if (!MAIL_DIR_WRITABLE) return null;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const slug = safeFilename(`${stamp}_${kind}_${to}_${subject}`);
   const dir = path.join(MAIL_DIR, slug);
@@ -271,20 +278,17 @@ async function sendStatusChangeEmail(app, event) {
 /** Static config snapshot. No secrets leaked; the key's presence is reported
  *  but the key itself is never returned. */
 function emailConfig() {
-  let mailOutWritable = false;
   let mailOutCount = 0;
-  try {
-    fs.accessSync(MAIL_DIR, fs.constants.W_OK);
-    mailOutWritable = true;
-    mailOutCount = fs.readdirSync(MAIL_DIR).length;
-  } catch (_) { /* directory not writable */ }
+  if (MAIL_DIR_WRITABLE) {
+    try { mailOutCount = fs.readdirSync(MAIL_DIR).length; } catch (_) {}
+  }
 
   return {
     resend_api_key_set: Boolean(RESEND_API_KEY),
     from_email: FROM_EMAIL,
     tracker_base_url: TRACKER_BASE,
     mail_out_dir: MAIL_DIR,
-    mail_out_writable: mailOutWritable,
+    mail_out_writable: MAIL_DIR_WRITABLE,
     mail_out_folders: mailOutCount
   };
 }
