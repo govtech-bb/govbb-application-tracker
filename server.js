@@ -1130,29 +1130,35 @@ function safeJson(s, fallback = null) {
    Boot
    ========================================================= */
 
-async function start() {
+let _initDone = false;
+async function ensureInit() {
+  if (_initDone) return;
   await initDb();
+  _initDone = true;
+}
 
-  const { rows } = await pool.query('SELECT COUNT(*) AS n FROM programmes');
-  if (parseInt(rows[0].n, 10) === 0) {
-    console.log('No programmes found. Run "node seed.js" first.');
-  }
+app.use(async (req, res, next) => {
+  try { await ensureInit(); next(); }
+  catch (e) { res.status(503).json({ error: 'Database not ready' }); }
+});
 
-  app.listen(PORT, () => {
-    console.log(`\nGovBB Application Tracker pilot`);
-    console.log(`  http://localhost:${PORT}/                  citizen tracker`);
-    console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
-    console.log(`  http://localhost:${PORT}/officer/login     officer console`);
-    console.log(`  Emails written to:  ./mail-out/`);
-    console.log(`  Database:           PostgreSQL (${process.env.DATABASE_URL ? 'configured' : 'localhost'})`);
+if (require.main === module) {
+  ensureInit().then(() => {
+    app.listen(PORT, () => {
+      console.log(`\nGovBB Application Tracker pilot`);
+      console.log(`  http://localhost:${PORT}/                  citizen tracker`);
+      console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
+      console.log(`  http://localhost:${PORT}/officer/login     officer console`);
+      console.log(`  Database:           PostgreSQL (${process.env.DATABASE_URL ? 'configured' : 'localhost'})`);
+    });
+  }).catch(e => {
+    if (e.code === 'ECONNREFUSED') {
+      console.error('FATAL: Cannot connect to PostgreSQL. Set DATABASE_URL in your environment.');
+    } else {
+      console.error('FATAL: failed to start:', e);
+    }
+    process.exit(1);
   });
 }
 
-start().catch(e => {
-  if (e.code === 'ECONNREFUSED') {
-    console.error('FATAL: Cannot connect to PostgreSQL. Set DATABASE_URL in your environment.');
-  } else {
-    console.error('FATAL: failed to start:', e);
-  }
-  process.exit(1);
-});
+module.exports = app;
