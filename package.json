@@ -6,14 +6,16 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node seed.js",
-    "reset": "rm -rf data mail-out && node seed.js"
+    "reset": "rm -rf mail-out && node seed.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.5.0",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.5.1",
     "express-session": "^1.18.0",
-    "multer": "^1.4.5-lts.1"
+    "lusca": "^1.7.0",
+    "multer": "^2.1.1",
+    "pg": "^8.20.0"
   },
   "engines": {
     "node": ">=18"

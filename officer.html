@@ -631,8 +631,20 @@ document.getElementById('tabbar').addEventListener('click', e => {
 /* =========================================================
    API helpers
    ========================================================= */
+let _csrfToken = null;
+async function csrfToken() {
+  if (!_csrfToken) {
+    const r = await fetch('/api/csrf-token');
+    _csrfToken = (await r.json()).token;
+  }
+  return _csrfToken;
+}
+
 async function api(method, url, body) {
   const init = { method, headers: {} };
+  if (method !== 'GET') {
+    init.headers['x-csrf-token'] = await csrfToken();
+  }
   if (body !== undefined) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
@@ -669,7 +681,7 @@ async function boot() {
   document.getElementById('ministry-name').textContent = MINISTRY_NAMES[code] || code || 'Ministry';
 
   document.getElementById('signout').addEventListener('click', async () => {
-    await fetch('/api/officer/logout', { method: 'POST' });
+    await fetch('/api/officer/logout', { method: 'POST', headers: { 'x-csrf-token': await csrfToken() } });
     location.href = '/officer/login';
   });
 

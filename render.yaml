@@ -1,21 +1,15 @@
-# Render service definition.
-#
-# To deploy:
-#   1. Push this repo to GitHub.
-#   2. In Render, "New +" → "Blueprint" → point at this repo.
-#   3. Render reads this file and creates the service + disk.
-#   4. Set the env vars marked sync: false (secrets) in the Render UI.
-#   5. The service builds, runs `node seed.js` once at boot (idempotent in
-#      production), then starts. Watch the deploy log for any generated
-#      passwords / API key — copy them to your password manager.
+databases:
+  - name: govbb-tracker-db
+    plan: starter             # ~$7/mo: 1 GB, managed Postgres
+    databaseName: govbb_tracker
+    user: govbb
+
 services:
   - type: web
     name: govbb-tracker
     runtime: docker
-    plan: starter            # ~$7/mo: always-on, persistent disk supported
-    region: oregon           # closest Render region; for Caribbean users a
-                             # custom domain via Cloudflare is the easiest
-                             # latency win (cf nodes are everywhere).
+    plan: starter
+    region: oregon
     branch: main
     healthCheckPath: /healthz
     envVars:
@@ -23,6 +17,10 @@ services:
         value: production
       - key: PORT
         value: 3030
+      - key: DATABASE_URL
+        fromDatabase:
+          name: govbb-tracker-db
+          property: connectionString
       - key: TRACKER_DATA_DIR
         value: /var/data
       - key: MAIL_OUT_DIR
@@ -30,15 +28,15 @@ services:
       - key: UPLOAD_DIR
         value: /var/data/uploads
       - key: SESSION_SECRET
-        generateValue: true   # Render generates once and stores
+        generateValue: true
       - key: TRACKER_BASE_URL
-        sync: false           # set in Render UI to your public URL
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: FROM_EMAIL
         sync: false
       - key: INCOMING_API_KEY
-        sync: false           # leave blank on first deploy to auto-generate
+        sync: false
       - key: OFFICER_PASSWORD_ANDREA
         sync: false
       - key: OFFICER_PASSWORD_TREVOR
@@ -50,4 +48,4 @@ services:
     disk:
       name: tracker-data
       mountPath: /var/data
-      sizeGB: 1               # smallest tier; the DB + email audit easily fit
+      sizeGB: 1               # for email audit trail + citizen uploads only (DB is Postgres)

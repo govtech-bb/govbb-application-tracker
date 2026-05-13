@@ -24,7 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { db } = require('./db');
+const { pool } = require('./db');
 
 const MAIL_DIR = process.env.MAIL_OUT_DIR || path.join(__dirname, 'mail-out');
 if (!fs.existsSync(MAIL_DIR)) fs.mkdirSync(MAIL_DIR, { recursive: true });
@@ -241,10 +241,10 @@ async function sendSubmissionEmail(app) {
     kind: 'submission'
   });
   const messageId = await sendViaResend({ to: app.applicant_email, subject, text, html });
-  db.prepare(`
+  await pool.query(`
     INSERT INTO notifications (application_id, kind, channel, recipient, subject, body_path)
-    VALUES (?, 'submission', 'email', ?, ?, ?)
-  `).run(app.id, app.applicant_email, subject, bodyPath);
+    VALUES ($1, 'submission', 'email', $2, $3, $4)
+  `, [app.id, app.applicant_email, subject, bodyPath]);
   console.log(`[mail] submission → ${app.applicant_email} (${app.code})${messageId ? ' resend:' + messageId : ' [disk only]'}`);
 }
 
@@ -257,10 +257,10 @@ async function sendStatusChangeEmail(app, event) {
     kind: 'status_change'
   });
   const messageId = await sendViaResend({ to: app.applicant_email, subject, text, html });
-  db.prepare(`
+  await pool.query(`
     INSERT INTO notifications (application_id, kind, channel, recipient, subject, body_path)
-    VALUES (?, 'status_change', 'email', ?, ?, ?)
-  `).run(app.id, app.applicant_email, subject, bodyPath);
+    VALUES ($1, 'status_change', 'email', $2, $3, $4)
+  `, [app.id, app.applicant_email, subject, bodyPath]);
   console.log(`[mail] status_change → ${app.applicant_email} (${app.code} → ${event.status})${messageId ? ' resend:' + messageId : ' [disk only]'}`);
 }
 
