@@ -59,15 +59,20 @@ const err = document.getElementById('err');
 const params = new URLSearchParams(location.search);
 const next = params.get('next') || '/officer';
 
+async function getCsrfToken() {
+  const r = await fetch('/api/csrf-token');
+  return (await r.json()).token;
+}
+
 form.addEventListener('submit', async e => {
   e.preventDefault();
   err.classList.remove('is-on');
   const email = document.getElementById('email').value.trim().toLowerCase();
   const password = document.getElementById('password').value;
+  const csrf = await getCsrfToken();
   const r = await fetch('/api/officer/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    // The server still accepts `username` for back-compat — email is the value.
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify({ username: email, password })
   });
   if (r.ok) {

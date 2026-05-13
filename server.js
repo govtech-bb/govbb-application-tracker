@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const express = require('express');
 const session = require('express-session');
+const cookieParser = require('cookie-parser');
+const { doubleCsrf } = require('csrf-csrf');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 
@@ -52,6 +54,7 @@ if (IS_PROD && !process.env.SESSION_SECRET) {
 
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser(process.env.SESSION_SECRET || 'dev-only-pilot-secret'));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-only-pilot-secret',
   resave: false,
@@ -64,24 +67,29 @@ app.use(session({
   }
 }));
 
-/* =========================================================
-   CSRF protection — Origin header verification.
-   All state-changing requests (POST/PUT/PATCH/DELETE) from browsers
-   include an Origin header. We reject requests whose Origin doesn't
-   match our expected host. API-key-authenticated webhooks are exempt
-   because they don't use cookies.
-   ========================================================= */
-const ALLOWED_ORIGINS = new Set(
-  (process.env.TRACKER_BASE_URL || `http://localhost:${PORT}`)
-    .split(',').map(s => s.trim().replace(/\/+$/, ''))
-);
+const CSRF_SECRET = process.env.CSRF_SECRET || process.env.SESSION_SECRET || 'dev-only-csrf-secret';
+const { generateToken, doubleCsrfProtection } = doubleCsrf({
+  getSecret: () => CSRF_SECRET,
+  getSessionIdentifier: (req) => req.session && req.session.id || '',
+  cookieName: IS_PROD ? '__Host-psifi.x-csrf-token' : 'x-csrf-token',
+  cookieOptions: {
+    sameSite: 'lax',
+    path: '/',
+    secure: IS_PROD,
+    httpOnly: true
+  },
+  getCsrfTokenFromRequest: (req) => req.headers['x-csrf-token'],
+  skipCsrfProtection: (req) =>
+    req.path.startsWith('/api/webhooks/') ||
+    req.path.startsWith('/api/applications/') ||
+    req.path === '/api/set-password'
+});
 
-app.use((req, res, next) => {
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
-  const origin = req.get('Origin');
-  if (!origin) return next();
-  if (ALLOWED_ORIGINS.has(origin)) return next();
-  return res.status(403).json({ error: 'Cross-origin request blocked' });
+app.use(doubleCsrfProtection);
+
+app.get('/api/csrf-token', (req, res) => {
+  const token = generateToken(req, res);
+  res.json({ token });
 });
 
 /* =========================================================

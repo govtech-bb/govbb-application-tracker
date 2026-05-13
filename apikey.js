@@ -1,8 +1,12 @@
 const crypto = require('crypto');
 const { pool } = require('./db');
 
+const SCRYPT_KEYLEN = 32;
+const SCRYPT_SALT = process.env.API_KEY_SALT || 'govbb-tracker-api-key-salt';
+const SCRYPT_OPTS = { N: 16384, r: 8, p: 1 };
+
 function hashKey(rawKey) {
-  return crypto.createHash('sha256').update(rawKey, 'utf8').digest('hex');
+  return crypto.scryptSync(rawKey, SCRYPT_SALT, SCRYPT_KEYLEN, SCRYPT_OPTS).toString('hex');
 }
 
 function extractKey(req) {
