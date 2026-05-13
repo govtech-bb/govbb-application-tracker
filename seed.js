@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const bcrypt = require('bcryptjs');
 const { pool, initDb, insertStatusEvent } = require('./db');
 const { generateUniqueCode } = require('./codes');
