@@ -3,8 +3,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const express = require('express');
 const session = require('express-session');
+const pgSession = require('connect-pg-simple')(session);
 const lusca = require('lusca');
-const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 
 const {
@@ -54,6 +54,7 @@ if (IS_PROD && !process.env.SESSION_SECRET) {
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
+  store: IS_PROD ? new pgSession({ pool, createTableIfMissing: true }) : undefined,
   secret: process.env.SESSION_SECRET || 'dev-only-pilot-secret',
   resave: false,
   saveUninitialized: false,
@@ -116,56 +117,17 @@ const apiLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 
 /* =========================================================
-   File-upload setup (multer + on-disk storage).
+   File-upload setup.
+   Disk-based uploads are disabled — will be replaced with S3.
    ========================================================= */
-const UPLOAD_DIR = process.env.UPLOAD_DIR
-  || path.join(process.env.TRACKER_DATA_DIR || path.join(__dirname, 'data'), 'uploads');
-try {
-  if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-} catch (_) {
-  console.warn('[upload] Could not create upload directory — file uploads disabled');
-}
-
-const ALLOWED_MIME = new Set([
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/gif',
-  'text/plain'
-]);
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-
-const uploadStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const appObj = req._appForUpload;
-    if (!appObj) return cb(new Error('No application for upload'));
-    const dir = path.join(UPLOAD_DIR, String(appObj.id));
-    fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || '').toLowerCase().slice(0, 8);
-    const rand = crypto.randomBytes(12).toString('hex');
-    cb(null, rand + ext);
-  }
-});
-const uploadCitizenFile = multer({
-  storage: uploadStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
-  fileFilter: (req, file, cb) => {
-    if (!ALLOWED_MIME.has(file.mimetype)) {
-      return cb(new Error('File type not allowed. Accepted: PDF, Word, common images, plain text.'));
-    }
-    cb(null, true);
-  }
-}).single('file');
+const FILE_UPLOADS_ENABLED = false;
 
 app.get('/healthz', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 app.get('/healthz/email', (req, res) => {
   const cfg = emailConfig();
   res.json({
-    ok: cfg.resend_api_key_set && cfg.mail_out_writable,
+    ok: cfg.resend_api_key_set,
     config: cfg,
     instructions: cfg.resend_api_key_set
       ? 'Looks configured. POST /api/officer/test-email with {"to":"you@example.com"} to send a real test (officer auth required).'
@@ -383,31 +345,13 @@ app.post('/api/applications/:code/respond', async (req, res) => {
   const pending = await getPendingAction(application.id);
   if (!pending) return res.status(400).json({ error: 'There is no outstanding request on this application.' });
 
-  req._appForUpload = application;
-
   if (pending.action_type === 'file') {
-    uploadCitizenFile(req, res, async (err) => {
-      if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
-      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      try {
-        await recordActionResponse({
-          event_id: pending.id,
-          application_id: application.id,
-          response_text: null,
-          file: {
-            original_filename: String(req.file.originalname || 'upload').slice(0, 200),
-            stored_filename: req.file.filename,
-            mime_type: req.file.mimetype,
-            size_bytes: req.file.size
-          }
-        });
-        await finaliseCitizenResponse({ application, pending, req, res, summary: `Uploaded ${req.file.originalname}` });
-      } catch (e) {
-        try { fs.unlinkSync(req.file.path); } catch (_) {}
-        return res.status(500).json({ error: 'Could not record the response.' });
-      }
-    });
-  } else {
+    if (!FILE_UPLOADS_ENABLED) {
+      return res.status(501).json({ error: 'File uploads are temporarily unavailable. Please try again later.' });
+    }
+  }
+
+  if (pending.action_type !== 'file') {
     const body = req.body || {};
     let responseText = null;
     if (pending.action_type === 'confirmation') {
@@ -469,12 +413,17 @@ async function finaliseCitizenResponse({ application, pending, req, res, summary
    Officer-only download for citizen-uploaded files.
    ========================================================= */
 app.get('/api/officer/applications/:id/uploads/:upload_id', requireOfficer, async (req, res) => {
+  if (!FILE_UPLOADS_ENABLED) {
+    return res.status(501).json({ error: 'File downloads are temporarily unavailable.' });
+  }
   const me = req.session.officer;
   const appId = parseInt(req.params.id, 10);
   const upId = parseInt(req.params.upload_id, 10);
   if (!(await officerCanAccessApplication(me.id, me.is_admin, appId))) {
     return res.status(403).json({ error: 'You do not have access to this application' });
   }
+  const UPLOAD_DIR = process.env.UPLOAD_DIR
+    || path.join(process.env.TRACKER_DATA_DIR || path.join(__dirname, 'data'), 'uploads');
   const { rows } = await pool.query(`
     SELECT id, application_id, original_filename, stored_filename, mime_type, size_bytes
     FROM uploads
@@ -1200,6 +1149,10 @@ async function start() {
 }
 
 start().catch(e => {
-  console.error('FATAL: failed to start:', e);
+  if (e.code === 'ECONNREFUSED') {
+    console.error('FATAL: Cannot connect to PostgreSQL. Set DATABASE_URL in your environment.');
+  } else {
+    console.error('FATAL: failed to start:', e);
+  }
   process.exit(1);
 });
