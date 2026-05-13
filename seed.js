@@ -195,6 +195,8 @@ const APPLICANTS = [
 ];
 
 async function seed() {
+  const dbUrl = process.env.DATABASE_URL || 'postgresql://localhost:5432/govbb_tracker';
+  console.log(`Connecting to: ${dbUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@')}`);
   await initDb();
 
   console.log(`Seeding GovBB tracker pilot database${IS_PROD ? ' (production mode)' : ''}...`);
