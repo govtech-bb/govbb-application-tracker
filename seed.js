@@ -355,8 +355,11 @@ async function seed() {
     console.log('\nDone. Production seed complete.');
     if (generatedPasswords.length) {
       const credsPath = path.join(process.env.TRACKER_DATA_DIR || '.', '.bootstrap-credentials');
-      const lines = generatedPasswords.map(({ email, password }) => `${email}: ${password}`);
-      fs.writeFileSync(credsPath, lines.join('\n') + '\n', { mode: 0o600 });
+      const fd = fs.openSync(credsPath, 'w', 0o600);
+      for (const cred of generatedPasswords) {
+        fs.writeSync(fd, cred.email + ': ' + cred.password + '\n');
+      }
+      fs.closeSync(fd);
       console.log('\n=================================================================');
       console.log('  Random officer passwords were generated.');
       console.log(`  Written to: ${credsPath} (mode 600)`);
@@ -375,16 +378,22 @@ async function seed() {
       console.log('=================================================================');
     }
   } else {
+    const devCredsPath = path.join('.', '.dev-credentials');
+    const devLines = [
+      'Officer logins (email + dev password):',
+      '  andrea.best@barbados.gov.bb / andrea       (admin)',
+      '  trevor.inniss@barbados.gov.bb / trevor',
+      '  joy.greenidge@barbados.gov.bb / joy',
+      '',
+      'Form-intake API key (dev only):',
+      `  X-API-Key: ${issuedClient.plaintext}`,
+      '  Used by /api/webhooks/form-submitted. Rotate by re-running this script.'
+    ];
+    fs.writeFileSync(devCredsPath, devLines.join('\n') + '\n', { mode: 0o600 });
     console.log('\nDone. Try:');
     console.log('  npm start');
     console.log('  open http://localhost:3030');
-    console.log('\nOfficer logins (email + dev password):');
-    console.log('  andrea.best@barbados.gov.bb / andrea       (admin)');
-    console.log('  trevor.inniss@barbados.gov.bb / trevor');
-    console.log('  joy.greenidge@barbados.gov.bb / joy');
-    console.log('\nForm-intake API key (dev only):');
-    console.log(`  X-API-Key: ${issuedClient.plaintext}`);
-    console.log('  Used by /api/webhooks/form-submitted. Rotate by re-running this script.');
+    console.log(`\nDev credentials written to: ${devCredsPath}`);
   }
 
   await pool.end();
