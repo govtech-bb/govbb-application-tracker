@@ -120,7 +120,11 @@ app.use('/api/', apiLimiter);
    ========================================================= */
 const UPLOAD_DIR = process.env.UPLOAD_DIR
   || path.join(process.env.TRACKER_DATA_DIR || path.join(__dirname, 'data'), 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+} catch (_) {
+  console.warn('[upload] Could not create upload directory — file uploads disabled');
+}
 
 const ALLOWED_MIME = new Set([
   'application/pdf',
