@@ -45,4 +45,15 @@ async function issueKey(name, scope = null, plaintext = null) {
   return { id: rows[0].id, name, plaintext: raw };
 }
 
-module.exports = { requireApiKey, issueKey, hashKey };
+async function rotateKey(name, newPlaintext = null) {
+  const raw = newPlaintext || ('sk_' + crypto.randomBytes(24).toString('base64url'));
+  const hash = hashKey(raw);
+  const { rows } = await pool.query(
+    `UPDATE api_clients SET key_hash = $1 WHERE name = $2 RETURNING id`,
+    [hash, name]
+  );
+  if (rows.length === 0) throw new Error(`No API client found with name: ${name}`);
+  return { id: rows[0].id, name, plaintext: raw };
+}
+
+module.exports = { requireApiKey, issueKey, hashKey, rotateKey };
