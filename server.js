@@ -119,6 +119,13 @@ const apiLimiter = rateLimit({
 
 app.use('/api/', apiLimiter);
 
+const pageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 /* =========================================================
    File-upload setup.
    Disk-based uploads are disabled — will be replaced with S3.
@@ -159,19 +166,19 @@ app.post('/api/officer/test-email', requireOfficer, async (req, res) => {
    ========================================================= */
 
 if (SERVE_PUBLIC) {
-  app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-  app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-  app.get('/track/:code', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-  app.get('/chat', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-  app.get('/confirmation/:code', (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
+  app.get('/', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track/:code', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/chat', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/confirmation/:code', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
 }
 
 if (SERVE_ADMIN) {
-  if (!SERVE_PUBLIC) app.get('/', (req, res) => res.redirect('/officer/login'));
-  app.get('/submit-test', (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
-  app.get('/officer/login', (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
-  app.get('/officer', requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
-  app.get('/set-password/:token', (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+  if (!SERVE_PUBLIC) app.get('/', pageLimiter, (req, res) => res.redirect('/officer/login'));
+  app.get('/submit-test', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
+  app.get('/officer/login', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
+  app.get('/officer', pageLimiter, requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
+  app.get('/set-password/:token', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
 }
 
 /* =========================================================
