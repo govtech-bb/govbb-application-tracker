@@ -43,6 +43,9 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3030;
 const IS_PROD = process.env.NODE_ENV === 'production';
+const APP_MODE = (process.env.APP_MODE || 'all').toLowerCase(); // 'public', 'admin', or 'all'
+const SERVE_PUBLIC = APP_MODE === 'public' || APP_MODE === 'all';
+const SERVE_ADMIN = APP_MODE === 'admin' || APP_MODE === 'all';
 
 app.set('trust proxy', 1);
 
@@ -155,56 +158,64 @@ app.post('/api/officer/test-email', requireOfficer, async (req, res) => {
    Static + page routes
    ========================================================= */
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/track/:code', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/chat', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/confirmation/:code', (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
-app.get('/submit-test', (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
-app.get('/officer/login', (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
-app.get('/officer', requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
-app.get('/set-password/:token', (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+if (SERVE_PUBLIC) {
+  app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track/:code', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/chat', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/confirmation/:code', (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
+}
+
+if (SERVE_ADMIN) {
+  if (!SERVE_PUBLIC) app.get('/', (req, res) => res.redirect('/officer/login'));
+  app.get('/submit-test', (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
+  app.get('/officer/login', (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
+  app.get('/officer', requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
+  app.get('/set-password/:token', (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+}
 
 /* =========================================================
-   Password setup / reset (public — token-protected)
+   Password setup / reset (token-protected, admin side)
    ========================================================= */
 
-app.get('/api/password-rules', (req, res) => {
-  res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
-});
-
-app.get('/api/password-token/:token', passwordLimiter, async (req, res) => {
-  const t = await findValidToken(req.params.token);
-  if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
-  res.json({
-    valid: true,
-    purpose: t.purpose,
-    officer: { name: t.officer.name, email: t.officer.email },
-    expires_at: t.expires_at
+if (SERVE_ADMIN) {
+  app.get('/api/password-rules', (req, res) => {
+    res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
   });
-});
 
-app.post('/api/set-password', passwordLimiter, async (req, res) => {
-  const { token, password } = req.body || {};
-  if (!token || !password) return res.status(400).json({ error: 'token and password required' });
-
-  const t = await findValidToken(token);
-  if (!t || t.error) {
-    await logAction({ action: 'password.set_fail', metadata: requestMeta(req, { reason: t && t.error || 'unknown' }) });
-    return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
-  }
-
-  const v = validatePassword(password, { email: t.officer.email });
-  if (!v.ok) return res.status(400).json({ error: v.errors[0], errors: v.errors });
-
-  await consumeTokenAndSetPassword(t.id, t.officer_id, hashPassword(password));
-  await logAction({
-    action: 'password.set_success',
-    target_kind: 'officer', target_id: t.officer_id,
-    metadata: requestMeta(req, { purpose: t.purpose, officer_email: t.officer.email })
+  app.get('/api/password-token/:token', passwordLimiter, async (req, res) => {
+    const t = await findValidToken(req.params.token);
+    if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+    res.json({
+      valid: true,
+      purpose: t.purpose,
+      officer: { name: t.officer.name, email: t.officer.email },
+      expires_at: t.expires_at
+    });
   });
-  res.json({ ok: true, redirect_to: '/officer/login' });
-});
+
+  app.post('/api/set-password', passwordLimiter, async (req, res) => {
+    const { token, password } = req.body || {};
+    if (!token || !password) return res.status(400).json({ error: 'token and password required' });
+
+    const t = await findValidToken(token);
+    if (!t || t.error) {
+      await logAction({ action: 'password.set_fail', metadata: requestMeta(req, { reason: t && t.error || 'unknown' }) });
+      return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+    }
+
+    const v = validatePassword(password, { email: t.officer.email });
+    if (!v.ok) return res.status(400).json({ error: v.errors[0], errors: v.errors });
+
+    await consumeTokenAndSetPassword(t.id, t.officer_id, hashPassword(password));
+    await logAction({
+      action: 'password.set_success',
+      target_kind: 'officer', target_id: t.officer_id,
+      metadata: requestMeta(req, { purpose: t.purpose, officer_email: t.officer.email })
+    });
+    res.json({ ok: true, redirect_to: '/officer/login' });
+  });
+}
 
 function errorMessage(code) {
   switch (code) {
@@ -220,51 +231,55 @@ function errorMessage(code) {
    Auth API
    ========================================================= */
 
-app.post('/api/officer/login', loginLimiter, async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
-  const officer = await authenticateOfficer(username, password);
-  if (officer && officer._inactive) {
-    await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'inactive' }) });
-    return res.status(403).json({ error: 'This account has been deactivated. Contact your admin.' });
-  }
-  if (!officer) {
-    await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'bad_credentials' }) });
-    return res.status(401).json({ error: 'Invalid username or password' });
-  }
-  req.session.officer = officer;
-  await logAction({
-    actor: officer,
-    action: 'login.success',
-    target_kind: 'officer',
-    target_id: officer.id,
-    metadata: requestMeta(req)
-  });
-  res.json({ officer });
-});
-
-app.post('/api/officer/logout', async (req, res) => {
-  const actor = req.session.officer;
-  if (actor) {
+if (SERVE_ADMIN) {
+  app.post('/api/officer/login', loginLimiter, async (req, res) => {
+    const { username, password } = req.body || {};
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    const officer = await authenticateOfficer(username, password);
+    if (officer && officer._inactive) {
+      await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'inactive' }) });
+      return res.status(403).json({ error: 'This account has been deactivated. Contact your admin.' });
+    }
+    if (!officer) {
+      await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'bad_credentials' }) });
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    req.session.officer = officer;
     await logAction({
-      actor,
-      action: 'logout',
+      actor: officer,
+      action: 'login.success',
       target_kind: 'officer',
-      target_id: actor.id,
+      target_id: officer.id,
       metadata: requestMeta(req)
     });
-  }
-  req.session.destroy(() => res.json({ ok: true }));
-});
+    res.json({ officer });
+  });
 
-app.get('/api/me', (req, res) => {
-  if (!req.session.officer) return res.status(401).json({ error: 'Not authenticated' });
-  res.json({ officer: req.session.officer });
-});
+  app.post('/api/officer/logout', async (req, res) => {
+    const actor = req.session.officer;
+    if (actor) {
+      await logAction({
+        actor,
+        action: 'logout',
+        target_kind: 'officer',
+        target_id: actor.id,
+        metadata: requestMeta(req)
+      });
+    }
+    req.session.destroy(() => res.json({ ok: true }));
+  });
+
+  app.get('/api/me', (req, res) => {
+    if (!req.session.officer) return res.status(401).json({ error: 'Not authenticated' });
+    res.json({ officer: req.session.officer });
+  });
+}
 
 /* =========================================================
    Public API
    ========================================================= */
+
+if (SERVE_PUBLIC) {
 
 app.get('/api/programmes', async (req, res) => {
   const { rows } = await pool.query(`
@@ -409,9 +424,14 @@ async function finaliseCitizenResponse({ application, pending, req, res, summary
   });
 }
 
+} // end SERVE_PUBLIC
+
 /* =========================================================
    Officer-only download for citizen-uploaded files.
    ========================================================= */
+
+if (SERVE_ADMIN) {
+
 app.get('/api/officer/applications/:id/uploads/:upload_id', requireOfficer, async (req, res) => {
   if (!FILE_UPLOADS_ENABLED) {
     return res.status(501).json({ error: 'File downloads are temporarily unavailable.' });
@@ -1117,6 +1137,8 @@ app.get('/api/admin/audit-log', requireOfficer, requireAdmin, async (req, res) =
   res.json({ entries: rows });
 });
 
+} // end SERVE_ADMIN
+
 /* =========================================================
    Helpers
    ========================================================= */
@@ -1145,10 +1167,12 @@ app.use(async (req, res, next) => {
 if (require.main === module) {
   ensureInit().then(() => {
     app.listen(PORT, () => {
-      console.log(`\nGovBB Application Tracker pilot`);
-      console.log(`  http://localhost:${PORT}/                  citizen tracker`);
-      console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
-      console.log(`  http://localhost:${PORT}/officer/login     officer console`);
+      console.log(`\nGovBB Application Tracker pilot (mode: ${APP_MODE})`);
+      if (SERVE_PUBLIC) console.log(`  http://localhost:${PORT}/                  citizen tracker`);
+      if (SERVE_ADMIN) {
+        console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
+        console.log(`  http://localhost:${PORT}/officer/login     officer console`);
+      }
       console.log(`  Database:           PostgreSQL (${process.env.DATABASE_URL ? 'configured' : 'localhost'})`);
     });
   }).catch(e => {

@@ -6,3 +6,5 @@ mail-out/
 .env
 .env.local
 .env.*.local
+.gstack/
+WEBHOOK-INTEGRATION.md
