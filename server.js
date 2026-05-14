@@ -282,12 +282,6 @@ if (SERVE_ADMIN) {
   });
 }
 
-/* =========================================================
-   Public API
-   ========================================================= */
-
-if (SERVE_PUBLIC) {
-
 app.get('/api/programmes', async (req, res) => {
   const { rows } = await pool.query(`
     SELECT code, name, ministry, default_sla_days, contact_email, contact_phone,
@@ -298,6 +292,12 @@ app.get('/api/programmes', async (req, res) => {
   `);
   res.json({ programmes: rows });
 });
+
+/* =========================================================
+   Public API
+   ========================================================= */
+
+if (SERVE_PUBLIC) {
 
 app.get('/api/sample-codes', async (req, res) => {
   if (IS_PROD) return res.status(404).json({ error: 'Not found' });
