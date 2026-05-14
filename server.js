@@ -14,6 +14,7 @@ const {
   getApplicationByCode,
   getApplicationById,
   listApplicationsForOfficer,
+  listDeletedApplications,
   listProgrammesForOfficer,
   officerCanAccessApplication,
   getPendingAction,
@@ -564,6 +565,12 @@ app.get('/api/officer/applications', requireOfficer, async (req, res) => {
   res.json({ applications: await listApplicationsForOfficer(me.id, me.is_admin) });
 });
 
+app.get('/api/officer/applications/deleted', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  res.json({ applications: await listDeletedApplications() });
+});
+
 app.get('/api/officer/applications/:id', requireOfficer, async (req, res) => {
   const me = req.session.officer;
   const id = parseInt(req.params.id, 10);
@@ -674,6 +681,129 @@ app.post('/api/officer/applications/:id/assign-me', requireOfficer, async (req, 
   });
 
   res.json({ application: await getApplicationById(id) });
+});
+
+app.delete('/api/officer/applications', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  if (ids.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 applications per request' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+  if (parsed.length === 0) {
+    return res.status(400).json({ error: 'No valid ids provided' });
+  }
+
+  const deleted = [];
+  const errors = [];
+
+  for (const id of parsed) {
+    if (!(await officerCanAccessApplication(me.id, me.is_admin, id))) {
+      errors.push({ id, error: 'Access denied' });
+      continue;
+    }
+    const app = await getApplicationById(id);
+    if (!app) {
+      errors.push({ id, error: 'Not found' });
+      continue;
+    }
+
+    await pool.query('UPDATE applications SET deleted_at = NOW() WHERE id = $1', [id]);
+
+    await logAction({
+      actor: me,
+      action: 'application.delete',
+      target_kind: 'application',
+      target_id: id,
+      before: { status: app.current_status },
+      after: { deleted: true },
+      metadata: requestMeta(req, { code: app.code })
+    });
+
+    deleted.push({ id, code: app.code });
+  }
+
+  res.json({ deleted, errors });
+});
+
+app.post('/api/officer/applications/restore', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+
+  const restored = [];
+  for (const id of parsed) {
+    const { rows } = await pool.query(
+      'UPDATE applications SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL RETURNING code', [id]
+    );
+    if (rows.length > 0) {
+      await logAction({
+        actor: me,
+        action: 'application.restore',
+        target_kind: 'application',
+        target_id: id,
+        before: { deleted: true },
+        after: { deleted: false },
+        metadata: requestMeta(req, { code: rows[0].code })
+      });
+      restored.push({ id, code: rows[0].code });
+    }
+  }
+  res.json({ restored });
+});
+
+app.post('/api/officer/applications/purge', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+
+  const purged = [];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const id of parsed) {
+      const { rows } = await client.query(
+        'SELECT a.code, ap.name AS applicant_name, p.name AS programme_name FROM applications a JOIN applicants ap ON ap.id = a.applicant_id JOIN programmes p ON p.id = a.programme_id WHERE a.id = $1 AND a.deleted_at IS NOT NULL', [id]
+      );
+      if (rows.length === 0) continue;
+      const snap = rows[0];
+
+      await client.query('DELETE FROM uploads WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM notifications WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM status_events WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM applications WHERE id = $1', [id]);
+
+      await logAction({
+        actor: me,
+        action: 'application.purge',
+        target_kind: 'application',
+        target_id: id,
+        before: { code: snap.code, applicant: snap.applicant_name, programme: snap.programme_name },
+        after: null,
+        metadata: requestMeta(req, { code: snap.code })
+      });
+      purged.push({ id, code: snap.code });
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Purge failed:', e);
+    return res.status(500).json({ error: 'Purge failed' });
+  } finally {
+    client.release();
+  }
+  res.json({ purged });
 });
 
 /* =========================================================

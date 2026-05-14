@@ -164,6 +164,12 @@ async function initDb() {
   } catch (e) {
     console.error('[migrate] WARNING: could not sync username→email:', e.message);
   }
+
+  try {
+    await pool.query(`ALTER TABLE applications ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP`);
+  } catch (e) {
+    console.error('[migrate] WARNING: could not add deleted_at column:', e.message);
+  }
 }
 
 async function withTransaction(fn) {
@@ -215,7 +221,7 @@ async function getApplicationByCode(code) {
     JOIN programmes p ON p.id = a.programme_id
     JOIN applicants ap ON ap.id = a.applicant_id
     LEFT JOIN officers o ON o.id = a.assigned_officer_id
-    WHERE a.code = $1
+    WHERE a.code = $1 AND a.deleted_at IS NULL
   `, [code]);
   const app = rows[0];
   if (!app) return null;
@@ -300,6 +306,7 @@ async function listApplicationsForOfficer(officerId, isAdmin) {
       JOIN programmes p ON p.id = a.programme_id
       JOIN applicants ap ON ap.id = a.applicant_id
       LEFT JOIN officers o ON o.id = a.assigned_officer_id
+      WHERE a.deleted_at IS NULL
       ORDER BY a.current_status_at DESC
     `);
     return rows;
@@ -315,12 +322,29 @@ async function listApplicationsForOfficer(officerId, isAdmin) {
     JOIN programmes p ON p.id = a.programme_id
     JOIN applicants ap ON ap.id = a.applicant_id
     LEFT JOIN officers o ON o.id = a.assigned_officer_id
-    WHERE EXISTS (
+    WHERE a.deleted_at IS NULL AND EXISTS (
       SELECT 1 FROM officer_programmes op
       WHERE op.officer_id = $1 AND op.programme_id = a.programme_id
     )
     ORDER BY a.current_status_at DESC
   `, [officerId]);
+  return rows;
+}
+
+async function listDeletedApplications() {
+  const { rows } = await pool.query(`
+    SELECT a.id, a.code, a.current_status, a.current_status_at, a.created_at,
+           a.deleted_at, a.flagged_after_close,
+           p.code AS programme_code, p.name AS programme_name,
+           ap.name AS applicant_name, ap.email AS applicant_email,
+           o.name AS assigned_officer_name
+    FROM applications a
+    JOIN programmes p ON p.id = a.programme_id
+    JOIN applicants ap ON ap.id = a.applicant_id
+    LEFT JOIN officers o ON o.id = a.assigned_officer_id
+    WHERE a.deleted_at IS NOT NULL
+    ORDER BY a.deleted_at DESC
+  `);
   return rows;
 }
 
@@ -385,6 +409,7 @@ module.exports = {
   getApplicationByCode,
   getApplicationById,
   listApplicationsForOfficer,
+  listDeletedApplications,
   listProgrammesForOfficer,
   officerCanAccessApplication,
   getPendingAction,
