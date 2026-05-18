@@ -36,6 +36,7 @@ try {
 }
 
 const TRACKER_BASE = process.env.TRACKER_BASE_URL || 'http://localhost:3030';
+const OFFICER_BASE = process.env.OFFICER_BASE_URL || TRACKER_BASE;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 // Resend's "onboarding@resend.dev" works without domain verification — useful
 // for first-deploy. Replace with no-reply@<verified-domain> once DNS is set.
@@ -392,7 +393,7 @@ async function sendTestEmail({ to, sentByOfficer }) {
  * The link expires after PASSWORD_TOKEN_TTL_HOURS (default 24).
  */
 async function sendPasswordSetupEmail({ officer, plaintextToken, ttlHours, isInitial }) {
-  const link = `${TRACKER_BASE}/set-password/${encodeURIComponent(plaintextToken)}`;
+  const link = `${OFFICER_BASE}/set-password/${encodeURIComponent(plaintextToken)}`;
   const subject = isInitial
     ? `Set up your GovBB Tracker account`
     : `Reset your GovBB Tracker password`;
