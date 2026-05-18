@@ -337,6 +337,35 @@ async function seed() {
     }
   }
 
+  // Demo application — matches the example code shown on the citizen landing page
+  {
+    const demoCode = 'BYAC-2026-A4F2K9X';
+    const { rows: progRows } = await pool.query("SELECT id FROM programmes WHERE code = 'BYAC'");
+    if (progRows[0]) {
+      const { rows: existing } = await pool.query('SELECT id FROM applications WHERE code = $1', [demoCode]);
+      if (!existing[0]) {
+        const { rows: appRows } = await pool.query(
+          "INSERT INTO applicants (name, email, phone) VALUES ($1, $2, $3) RETURNING id",
+          ['Allyce Cumberbatch', 'allyce.cumberbatch@example.com', '(246) 555-0110']
+        );
+        const { rows: insertRows } = await pool.query(`
+          INSERT INTO applications (code, programme_id, applicant_id, current_status, current_status_at, assigned_officer_id, form_data, created_at)
+          VALUES ($1, $2, $3, 'under_review', '2026-05-14 10:30', $4, $5, '2026-05-12 08:45')
+          RETURNING id
+        `, [demoCode, progRows[0].id, appRows[0].id,
+            officerIds['andrea'] || null,
+            JSON.stringify({ date_of_birth: '2004-02-18', parish: 'Christ Church', areas_of_interest: ['Community development'], availability: '6 months full-time' })]);
+        const appId = insertRows[0].id;
+        await pool.query(`
+          INSERT INTO status_events (application_id, status, citizen_message, by_officer_id, created_at) VALUES
+          ($1, 'received', 'Application received and acknowledged.', NULL, '2026-05-12 08:45'),
+          ($1, 'under_review', 'An officer is now reviewing your application.', $2, '2026-05-14 10:30')
+        `, [appId, officerIds['andrea'] || null]);
+        console.log(`  ✓ ${demoCode}  BYAC      Allyce Cumberbatch        → under_review (demo)`);
+      }
+    }
+  }
+
   // API client
   let issuedClient;
   if (IS_PROD) {

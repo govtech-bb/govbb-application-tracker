@@ -115,6 +115,14 @@ tailwind.config = {
         Back to track another application
       </a>
 
+      <div id="s-demo-banner" class="hidden bg-bb-yellow-10 border-2 border-bb-yellow-100 rounded-sm p-s mb-m flex items-start gap-3">
+        <span class="text-[1.5rem] leading-none mt-0.5" aria-hidden="true">&#9432;</span>
+        <div>
+          <p class="font-bold text-[1.0625rem]">This is an example record</p>
+          <p class="text-[1rem] text-bb-mid-grey-00">This is a sample application to show you what the tracker looks like. It is not a real application. To track yours, <a href="/" class="text-bb-blue-100 underline hover:no-underline focus-ring rounded-sm">enter your reference code</a>.</p>
+        </div>
+      </div>
+
       <p class="text-[1rem] uppercase tracking-wider font-bold text-bb-mid-grey-00 mb-1" id="s-service"></p>
       <h1 class="text-[2.5rem] md:text-h2 font-bold leading-[1.1] mb-2" id="s-headline"></h1>
       <p class="text-bb-mid-grey-00 text-[1.0625rem] mb-m">Reference <span id="s-code" class="font-mono font-bold text-bb-black-00"></span></p>
@@ -293,6 +301,10 @@ async function renderStatus(code) {
   }
   setRoute('status');
   document.title = `${app.programme_name} — ${app.code} — Track your application`;
+
+  const demoBanner = document.getElementById('s-demo-banner');
+  if (app.code === 'BYAC-2026-A4F2K9X') demoBanner.classList.remove('hidden');
+  else demoBanner.classList.add('hidden');
 
   const meta = STATUS_META[app.current_status] || STATUS_META.received;
   document.getElementById('s-service').textContent = app.programme_name;
