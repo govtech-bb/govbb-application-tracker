@@ -14,6 +14,7 @@ const {
   getApplicationByCode,
   getApplicationById,
   listApplicationsForOfficer,
+  listDeletedApplications,
   listProgrammesForOfficer,
   officerCanAccessApplication,
   getPendingAction,
@@ -43,6 +44,9 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3030;
 const IS_PROD = process.env.NODE_ENV === 'production';
+const APP_MODE = (process.env.APP_MODE || 'all').toLowerCase(); // 'public', 'admin', or 'all'
+const SERVE_PUBLIC = APP_MODE === 'public' || APP_MODE === 'all';
+const SERVE_ADMIN = APP_MODE === 'admin' || APP_MODE === 'all';
 
 app.set('trust proxy', 1);
 
@@ -116,6 +120,13 @@ const apiLimiter = rateLimit({
 
 app.use('/api/', apiLimiter);
 
+const pageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 /* =========================================================
    File-upload setup.
    Disk-based uploads are disabled — will be replaced with S3.
@@ -155,56 +166,64 @@ app.post('/api/officer/test-email', requireOfficer, async (req, res) => {
    Static + page routes
    ========================================================= */
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/track/:code', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/chat', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/confirmation/:code', (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
-app.get('/submit-test', (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
-app.get('/officer/login', (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
-app.get('/officer', requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
-app.get('/set-password/:token', (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+if (SERVE_PUBLIC) {
+  app.get('/', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/track/:code', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/chat', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+  app.get('/confirmation/:code', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'confirmation.html')));
+}
+
+if (SERVE_ADMIN) {
+  if (!SERVE_PUBLIC) app.get('/', pageLimiter, (req, res) => res.redirect('/officer/login'));
+  app.get('/submit-test', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'submit-test.html')));
+  app.get('/officer/login', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'officer-login.html')));
+  app.get('/officer', pageLimiter, requireOfficer, (req, res) => res.sendFile(path.join(__dirname, 'officer.html')));
+  app.get('/set-password/:token', pageLimiter, (req, res) => res.sendFile(path.join(__dirname, 'set-password.html')));
+}
 
 /* =========================================================
-   Password setup / reset (public — token-protected)
+   Password setup / reset (token-protected, admin side)
    ========================================================= */
 
-app.get('/api/password-rules', (req, res) => {
-  res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
-});
-
-app.get('/api/password-token/:token', passwordLimiter, async (req, res) => {
-  const t = await findValidToken(req.params.token);
-  if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
-  res.json({
-    valid: true,
-    purpose: t.purpose,
-    officer: { name: t.officer.name, email: t.officer.email },
-    expires_at: t.expires_at
+if (SERVE_ADMIN) {
+  app.get('/api/password-rules', (req, res) => {
+    res.json({ rules: PASSWORD_RULES, ttl_hours: TOKEN_TTL_HOURS });
   });
-});
 
-app.post('/api/set-password', passwordLimiter, async (req, res) => {
-  const { token, password } = req.body || {};
-  if (!token || !password) return res.status(400).json({ error: 'token and password required' });
-
-  const t = await findValidToken(token);
-  if (!t || t.error) {
-    await logAction({ action: 'password.set_fail', metadata: requestMeta(req, { reason: t && t.error || 'unknown' }) });
-    return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
-  }
-
-  const v = validatePassword(password, { email: t.officer.email });
-  if (!v.ok) return res.status(400).json({ error: v.errors[0], errors: v.errors });
-
-  await consumeTokenAndSetPassword(t.id, t.officer_id, hashPassword(password));
-  await logAction({
-    action: 'password.set_success',
-    target_kind: 'officer', target_id: t.officer_id,
-    metadata: requestMeta(req, { purpose: t.purpose, officer_email: t.officer.email })
+  app.get('/api/password-token/:token', passwordLimiter, async (req, res) => {
+    const t = await findValidToken(req.params.token);
+    if (!t || t.error) return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+    res.json({
+      valid: true,
+      purpose: t.purpose,
+      officer: { name: t.officer.name, email: t.officer.email },
+      expires_at: t.expires_at
+    });
   });
-  res.json({ ok: true, redirect_to: '/officer/login' });
-});
+
+  app.post('/api/set-password', passwordLimiter, async (req, res) => {
+    const { token, password } = req.body || {};
+    if (!token || !password) return res.status(400).json({ error: 'token and password required' });
+
+    const t = await findValidToken(token);
+    if (!t || t.error) {
+      await logAction({ action: 'password.set_fail', metadata: requestMeta(req, { reason: t && t.error || 'unknown' }) });
+      return res.status(400).json({ error: errorMessage(t && t.error), code: (t && t.error) || 'unknown' });
+    }
+
+    const v = validatePassword(password, { email: t.officer.email });
+    if (!v.ok) return res.status(400).json({ error: v.errors[0], errors: v.errors });
+
+    await consumeTokenAndSetPassword(t.id, t.officer_id, hashPassword(password));
+    await logAction({
+      action: 'password.set_success',
+      target_kind: 'officer', target_id: t.officer_id,
+      metadata: requestMeta(req, { purpose: t.purpose, officer_email: t.officer.email })
+    });
+    res.json({ ok: true, redirect_to: '/officer/login' });
+  });
+}
 
 function errorMessage(code) {
   switch (code) {
@@ -220,51 +239,49 @@ function errorMessage(code) {
    Auth API
    ========================================================= */
 
-app.post('/api/officer/login', loginLimiter, async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
-  const officer = await authenticateOfficer(username, password);
-  if (officer && officer._inactive) {
-    await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'inactive' }) });
-    return res.status(403).json({ error: 'This account has been deactivated. Contact your admin.' });
-  }
-  if (!officer) {
-    await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'bad_credentials' }) });
-    return res.status(401).json({ error: 'Invalid username or password' });
-  }
-  req.session.officer = officer;
-  await logAction({
-    actor: officer,
-    action: 'login.success',
-    target_kind: 'officer',
-    target_id: officer.id,
-    metadata: requestMeta(req)
-  });
-  res.json({ officer });
-});
-
-app.post('/api/officer/logout', async (req, res) => {
-  const actor = req.session.officer;
-  if (actor) {
+if (SERVE_ADMIN) {
+  app.post('/api/officer/login', loginLimiter, async (req, res) => {
+    const { username, password } = req.body || {};
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    const officer = await authenticateOfficer(username, password);
+    if (officer && officer._inactive) {
+      await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'inactive' }) });
+      return res.status(403).json({ error: 'This account has been deactivated. Contact your admin.' });
+    }
+    if (!officer) {
+      await logAction({ action: 'login.fail', metadata: requestMeta(req, { username, reason: 'bad_credentials' }) });
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    req.session.officer = officer;
     await logAction({
-      actor,
-      action: 'logout',
+      actor: officer,
+      action: 'login.success',
       target_kind: 'officer',
-      target_id: actor.id,
+      target_id: officer.id,
       metadata: requestMeta(req)
     });
-  }
-  req.session.destroy(() => res.json({ ok: true }));
-});
+    res.json({ officer });
+  });
 
-app.get('/api/me', (req, res) => {
-  if (!req.session.officer) return res.status(401).json({ error: 'Not authenticated' });
-  res.json({ officer: req.session.officer });
-});
+  app.post('/api/officer/logout', async (req, res) => {
+    const actor = req.session.officer;
+    if (actor) {
+      await logAction({
+        actor,
+        action: 'logout',
+        target_kind: 'officer',
+        target_id: actor.id,
+        metadata: requestMeta(req)
+      });
+    }
+    req.session.destroy(() => res.json({ ok: true }));
+  });
 
-/* =========================================================
-   Public API
-   ========================================================= */
+  app.get('/api/me', (req, res) => {
+    if (!req.session.officer) return res.status(401).json({ error: 'Not authenticated' });
+    res.json({ officer: req.session.officer });
+  });
+}
 
 app.get('/api/programmes', async (req, res) => {
   const { rows } = await pool.query(`
@@ -276,6 +293,12 @@ app.get('/api/programmes', async (req, res) => {
   `);
   res.json({ programmes: rows });
 });
+
+/* =========================================================
+   Public API
+   ========================================================= */
+
+if (SERVE_PUBLIC) {
 
 app.get('/api/sample-codes', async (req, res) => {
   if (IS_PROD) return res.status(404).json({ error: 'Not found' });
@@ -409,9 +432,14 @@ async function finaliseCitizenResponse({ application, pending, req, res, summary
   });
 }
 
+} // end SERVE_PUBLIC
+
 /* =========================================================
    Officer-only download for citizen-uploaded files.
    ========================================================= */
+
+if (SERVE_ADMIN) {
+
 app.get('/api/officer/applications/:id/uploads/:upload_id', requireOfficer, async (req, res) => {
   if (!FILE_UPLOADS_ENABLED) {
     return res.status(501).json({ error: 'File downloads are temporarily unavailable.' });
@@ -564,6 +592,12 @@ app.get('/api/officer/applications', requireOfficer, async (req, res) => {
   res.json({ applications: await listApplicationsForOfficer(me.id, me.is_admin) });
 });
 
+app.get('/api/officer/applications/deleted', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  res.json({ applications: await listDeletedApplications() });
+});
+
 app.get('/api/officer/applications/:id', requireOfficer, async (req, res) => {
   const me = req.session.officer;
   const id = parseInt(req.params.id, 10);
@@ -674,6 +708,129 @@ app.post('/api/officer/applications/:id/assign-me', requireOfficer, async (req, 
   });
 
   res.json({ application: await getApplicationById(id) });
+});
+
+app.delete('/api/officer/applications', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  if (ids.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 applications per request' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+  if (parsed.length === 0) {
+    return res.status(400).json({ error: 'No valid ids provided' });
+  }
+
+  const deleted = [];
+  const errors = [];
+
+  for (const id of parsed) {
+    if (!(await officerCanAccessApplication(me.id, me.is_admin, id))) {
+      errors.push({ id, error: 'Access denied' });
+      continue;
+    }
+    const app = await getApplicationById(id);
+    if (!app) {
+      errors.push({ id, error: 'Not found' });
+      continue;
+    }
+
+    await pool.query('UPDATE applications SET deleted_at = NOW() WHERE id = $1', [id]);
+
+    await logAction({
+      actor: me,
+      action: 'application.delete',
+      target_kind: 'application',
+      target_id: id,
+      before: { status: app.current_status },
+      after: { deleted: true },
+      metadata: requestMeta(req, { code: app.code })
+    });
+
+    deleted.push({ id, code: app.code });
+  }
+
+  res.json({ deleted, errors });
+});
+
+app.post('/api/officer/applications/restore', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+
+  const restored = [];
+  for (const id of parsed) {
+    const { rows } = await pool.query(
+      'UPDATE applications SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL RETURNING code', [id]
+    );
+    if (rows.length > 0) {
+      await logAction({
+        actor: me,
+        action: 'application.restore',
+        target_kind: 'application',
+        target_id: id,
+        before: { deleted: true },
+        after: { deleted: false },
+        metadata: requestMeta(req, { code: rows[0].code })
+      });
+      restored.push({ id, code: rows[0].code });
+    }
+  }
+  res.json({ restored });
+});
+
+app.post('/api/officer/applications/purge', requireOfficer, async (req, res) => {
+  const me = req.session.officer;
+  if (!me.is_admin) return res.status(403).json({ error: 'Admin access required' });
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  const parsed = ids.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+
+  const purged = [];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const id of parsed) {
+      const { rows } = await client.query(
+        'SELECT a.code, ap.name AS applicant_name, p.name AS programme_name FROM applications a JOIN applicants ap ON ap.id = a.applicant_id JOIN programmes p ON p.id = a.programme_id WHERE a.id = $1 AND a.deleted_at IS NOT NULL', [id]
+      );
+      if (rows.length === 0) continue;
+      const snap = rows[0];
+
+      await client.query('DELETE FROM uploads WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM notifications WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM status_events WHERE application_id = $1', [id]);
+      await client.query('DELETE FROM applications WHERE id = $1', [id]);
+
+      await logAction({
+        actor: me,
+        action: 'application.purge',
+        target_kind: 'application',
+        target_id: id,
+        before: { code: snap.code, applicant: snap.applicant_name, programme: snap.programme_name },
+        after: null,
+        metadata: requestMeta(req, { code: snap.code })
+      });
+      purged.push({ id, code: snap.code });
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('Purge failed:', e);
+    return res.status(500).json({ error: 'Purge failed' });
+  } finally {
+    client.release();
+  }
+  res.json({ purged });
 });
 
 /* =========================================================
@@ -1117,6 +1274,8 @@ app.get('/api/admin/audit-log', requireOfficer, requireAdmin, async (req, res) =
   res.json({ entries: rows });
 });
 
+} // end SERVE_ADMIN
+
 /* =========================================================
    Helpers
    ========================================================= */
@@ -1145,10 +1304,12 @@ app.use(async (req, res, next) => {
 if (require.main === module) {
   ensureInit().then(() => {
     app.listen(PORT, () => {
-      console.log(`\nGovBB Application Tracker pilot`);
-      console.log(`  http://localhost:${PORT}/                  citizen tracker`);
-      console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
-      console.log(`  http://localhost:${PORT}/officer/login     officer console`);
+      console.log(`\nGovBB Application Tracker pilot (mode: ${APP_MODE})`);
+      if (SERVE_PUBLIC) console.log(`  http://localhost:${PORT}/                  citizen tracker`);
+      if (SERVE_ADMIN) {
+        console.log(`  http://localhost:${PORT}/submit-test       demo form submission`);
+        console.log(`  http://localhost:${PORT}/officer/login     officer console`);
+      }
       console.log(`  Database:           PostgreSQL (${process.env.DATABASE_URL ? 'configured' : 'localhost'})`);
     });
   }).catch(e => {

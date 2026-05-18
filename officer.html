@@ -91,6 +91,13 @@
   .btn-primary:hover { background: #001b5c; }
   .btn-danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
   .btn-danger:hover { background: #991b1b; }
+  .btn-delete-selected { font-size: 12.5px; padding: 5px 12px; }
+  .th-check, .td-check { width: 36px; text-align: center; padding: 0 4px !important; }
+  .th-check input, .td-check input { cursor: pointer; width: 15px; height: 15px; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--slate-800); color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 9999; animation: toast-in .25s ease; }
+  .toast.warn { background: #92400e; }
+  .toast.error { background: #991b1b; }
+  @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(12px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   .btn-sm { padding: 4px 9px; font-size: 12.5px; }
   .btn:focus-visible { outline: 3px solid #ffc726; outline-offset: 1px; }
 
@@ -314,6 +321,9 @@
 
         <h3>Flags</h3>
         <a data-filter-flag="1">After-close submissions <span class="count" id="c-flagged">0</span></a>
+
+        <h3 id="deleted-section-header" style="display:none">Admin</h3>
+        <a id="deleted-link" data-filter-deleted="1" style="display:none">Deleted <span class="count" id="c-deleted">0</span></a>
       </aside>
 
       <div class="cases-main">
@@ -350,6 +360,9 @@
         <div class="results-bar">
           <span><strong id="r-shown">0</strong> of <strong id="r-total">0</strong> applications</span>
           <span style="flex:1"></span>
+          <button type="button" class="btn btn-danger btn-delete-selected" id="btn-delete-selected" style="display:none">Delete selected (<span id="delete-count">0</span>)</button>
+          <button type="button" class="btn btn-primary" id="btn-restore-selected" style="display:none">Restore selected (<span id="restore-count">0</span>)</button>
+          <button type="button" class="btn btn-danger" id="btn-purge-selected" style="display:none">Permanently delete (<span id="purge-count">0</span>)</button>
           <span class="poll-indicator" id="poll-status" title="Auto-refreshing every 20 seconds">
             <span class="pulse"></span>
             <span id="poll-text">Live</span>
@@ -360,6 +373,7 @@
           <table class="t sortable row-click" aria-label="Applications">
             <thead>
               <tr>
+                <th class="th-check"><input type="checkbox" id="select-all" title="Select all"></th>
                 <th data-sort="code">Code <span class="arrow">↕</span></th>
                 <th data-sort="programme_name">Programme <span class="arrow">↕</span></th>
                 <th data-sort="applicant_name">Applicant <span class="arrow">↕</span></th>
@@ -369,7 +383,7 @@
                 <th data-sort="age">Age <span class="arrow">↕</span></th>
               </tr>
             </thead>
-            <tbody id="tbody"><tr><td colspan="7" class="loading">Loading caseload…</td></tr></tbody>
+            <tbody id="tbody"><tr><td colspan="8" class="loading">Loading caseload…</td></tr></tbody>
           </table>
           <div class="empty" id="empty" hidden>No applications match these filters.</div>
         </div>
@@ -586,19 +600,17 @@ const MINISTRY_NAMES = {
 let me = null;
 const state = {
   view: 'cases',
-  filterStatus: 'all', filterMine: false, filterFlagged: false,
+  filterStatus: 'all', filterMine: false, filterFlagged: false, filterDeleted: false,
   filterProgramme: '', filterOfficer: '', filterAge: '',
   search: '', sortBy: 'current_status_at', sortDir: 'desc',
   selectedId: null,
   applications: [],
-  // Polling + "new arrivals" tracking. Maps application_id -> arrivalTs.
-  // The .is-new visual indicator stays for NEW_HIGHLIGHT_MS, then fades.
+  deletedApplications: [],
   newApplicationIds: {},
-  freshHighlightIds: new Set(),   // ids that should animate on this render only
+  freshHighlightIds: new Set(),
   pollTimer: null,
   isPolling: false,
   firstFetchDone: false,
-  // Admin caches
   officers: [],
   programmes: [],
   audit: { entries: [], hasMore: false, action: '' }
@@ -640,6 +652,14 @@ async function csrfToken() {
   return _csrfToken;
 }
 
+function showToast(msg, type) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { el.remove(); }, 3500);
+}
+
 async function api(method, url, body) {
   const init = { method, headers: {} };
   if (method !== 'GET') {
@@ -673,6 +693,10 @@ async function boot() {
   document.getElementById('me-initial').textContent = me.name.split(/\s+/).map(p => p[0]).slice(0,2).join('');
   document.getElementById('me-admin-badge').hidden = !me.is_admin;
   document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !me.is_admin; });
+  if (me.is_admin) {
+    document.getElementById('deleted-section-header').style.display = '';
+    document.getElementById('deleted-link').style.display = '';
+  }
 
   // Ministry banner — short code from the officer record, friendly name from
   // the local lookup (falls back to the code if not mapped).
@@ -686,6 +710,7 @@ async function boot() {
   });
 
   await refreshCases();
+  if (me.is_admin) refreshDeletedCount();
   startPolling();
   // Every 10s, expire "new" marks older than NEW_HIGHLIGHT_MS so the indicator
   // fades even when no poll has happened (e.g. nothing new arriving).
@@ -795,21 +820,27 @@ document.querySelectorAll('.sidenav a[data-filter-status]').forEach(a => {
     document.querySelectorAll('.sidenav a').forEach(x => x.classList.remove('is-active'));
     a.classList.add('is-active');
     state.filterStatus = a.dataset.filterStatus;
-    state.filterMine = false; state.filterFlagged = false;
+    state.filterMine = false; state.filterFlagged = false; state.filterDeleted = false;
     renderCases();
   });
 });
 document.querySelector('.sidenav a[data-filter-mine]').addEventListener('click', e => {
   document.querySelectorAll('.sidenav a').forEach(x => x.classList.remove('is-active'));
   e.currentTarget.classList.add('is-active');
-  state.filterMine = true; state.filterFlagged = false; state.filterStatus = 'all';
+  state.filterMine = true; state.filterFlagged = false; state.filterDeleted = false; state.filterStatus = 'all';
   renderCases();
 });
 document.querySelector('.sidenav a[data-filter-flag]').addEventListener('click', e => {
   document.querySelectorAll('.sidenav a').forEach(x => x.classList.remove('is-active'));
   e.currentTarget.classList.add('is-active');
-  state.filterFlagged = true; state.filterMine = false; state.filterStatus = 'all';
+  state.filterFlagged = true; state.filterMine = false; state.filterDeleted = false; state.filterStatus = 'all';
   renderCases();
+});
+document.querySelector('.sidenav a[data-filter-deleted]').addEventListener('click', e => {
+  document.querySelectorAll('.sidenav a').forEach(x => x.classList.remove('is-active'));
+  e.currentTarget.classList.add('is-active');
+  state.filterDeleted = true; state.filterMine = false; state.filterFlagged = false; state.filterStatus = 'all';
+  refreshDeleted();
 });
 
 document.getElementById('q').addEventListener('input', e => { state.search = e.target.value.toLowerCase(); renderCases(); });
@@ -854,6 +885,14 @@ document.getElementById('drawer-close').addEventListener('click', closeDrawer);
 backdrop.addEventListener('click', closeDrawer);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDrawer(); closeModal(); } });
 
+document.getElementById('select-all').addEventListener('change', e => {
+  document.querySelectorAll('.row-check').forEach(cb => { cb.checked = e.target.checked; });
+  updateDeleteBar();
+});
+document.getElementById('btn-delete-selected').addEventListener('click', deleteSelected);
+document.getElementById('btn-restore-selected').addEventListener('click', restoreSelected);
+document.getElementById('btn-purge-selected').addEventListener('click', purgeSelected);
+
 function lastUpdate(a) { return a.current_status_at || a.created_at; }
 function ageDays(a) {
   const t = String(lastUpdate(a)).replace('T',' ').split(' ')[0];
@@ -862,7 +901,42 @@ function ageDays(a) {
   return Math.max(0, Math.floor((today - d) / (1000 * 60 * 60 * 24)));
 }
 
+function renderDeletedView() {
+  const rows = state.deletedApplications;
+  document.getElementById('page-title').textContent = 'Deleted applications';
+  document.getElementById('page-sub').textContent = 'Applications moved to the bin. Restore or permanently remove them.';
+  document.getElementById('r-shown').textContent = rows.length;
+  document.getElementById('r-total').textContent = rows.length;
+  document.getElementById('empty').hidden = rows.length > 0;
+
+  const checkedIds = new Set(Array.from(document.querySelectorAll('.row-check:checked')).map(cb => cb.dataset.id));
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = rows.map(a => `
+    <tr data-id="${a.id}">
+      <td class="td-check"><input type="checkbox" class="row-check" data-id="${a.id}" data-code="${a.code}" ${checkedIds.has(String(a.id)) ? 'checked' : ''}></td>
+      <td class="code">${a.code}</td>
+      <td>${escapeHtml(a.programme_name)}</td>
+      <td class="applicant">${escapeHtml(a.applicant_name)}</td>
+      <td><span class="pill" data-s="${a.current_status}"><span class="dot"></span>${STATUS_LABELS[a.current_status] || a.current_status}</span></td>
+      <td class="dim">${formatDate(a.deleted_at)}</td>
+      <td></td>
+      <td></td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('.row-check').forEach(cb => {
+    cb.addEventListener('change', updateDeleteBar);
+  });
+
+  updateDeleteBar();
+}
+
 function renderCases() {
+  if (state.filterDeleted) {
+    renderDeletedView();
+    return;
+  }
   const data = state.applications;
 
   const programmes = [...new Set(data.map(a => a.programme_name))].sort();
@@ -927,6 +1001,8 @@ function renderCases() {
     document.getElementById('page-sub').textContent = subs[state.filterStatus] || subs.all;
   }
 
+  const checkedIds = new Set(Array.from(document.querySelectorAll('.row-check:checked')).map(cb => cb.dataset.id));
+
   const tbody = document.getElementById('tbody');
   document.getElementById('r-shown').textContent = rows.length;
   document.getElementById('r-total').textContent = data.length;
@@ -945,6 +1021,7 @@ function renderCases() {
     const newPill = isNew ? `<span class="new-pill">New</span>` : '';
     return `
       <tr data-id="${a.id}" class="${classes}">
+        <td class="td-check"><input type="checkbox" class="row-check" data-id="${a.id}" data-code="${a.code}" ${checkedIds.has(String(a.id)) ? 'checked' : ''}></td>
         <td class="code">${a.code}${newPill}</td>
         <td>${escapeHtml(a.programme_name)}${flag}</td>
         <td class="applicant">${escapeHtml(a.applicant_name)}</td>
@@ -956,9 +1033,9 @@ function renderCases() {
     `;
   }).join('');
   tbody.querySelectorAll('tr').forEach(tr => {
-    tr.addEventListener('click', () => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.td-check') || e.target.classList.contains('row-check')) return;
       const id = parseInt(tr.dataset.id, 10);
-      // Opening a row clears its "new" mark — the officer has now seen it.
       if (state.newApplicationIds[id]) {
         delete state.newApplicationIds[id];
         tr.classList.remove('is-new', 'is-fresh');
@@ -970,7 +1047,12 @@ function renderCases() {
     });
   });
 
+  tbody.querySelectorAll('.row-check').forEach(cb => {
+    cb.addEventListener('change', updateDeleteBar);
+  });
+
   updateNewBadge();
+  updateDeleteBar();
 }
 
 /** Sync the "N new" pill on the Cases tab with the current state. */
@@ -979,6 +1061,111 @@ function updateNewBadge() {
   const n = Object.keys(state.newApplicationIds).length;
   if (n > 0) { badge.textContent = String(n); badge.hidden = false; }
   else { badge.hidden = true; }
+}
+
+function updateDeleteBar() {
+  const checked = document.querySelectorAll('.row-check:checked');
+  const n = checked.length;
+  const selectAll = document.getElementById('select-all');
+  const allBoxes = document.querySelectorAll('.row-check');
+  selectAll.checked = allBoxes.length > 0 && n === allBoxes.length;
+  selectAll.indeterminate = n > 0 && n < allBoxes.length;
+
+  const btnDelete = document.getElementById('btn-delete-selected');
+  const btnRestore = document.getElementById('btn-restore-selected');
+  const btnPurge = document.getElementById('btn-purge-selected');
+
+  if (state.filterDeleted) {
+    btnDelete.style.display = 'none';
+    btnRestore.style.display = n === 0 ? 'none' : '';
+    btnPurge.style.display = n === 0 ? 'none' : '';
+    document.getElementById('restore-count').textContent = n;
+    document.getElementById('purge-count').textContent = n;
+  } else {
+    btnRestore.style.display = 'none';
+    btnPurge.style.display = 'none';
+    btnDelete.style.display = n === 0 ? 'none' : '';
+    document.getElementById('delete-count').textContent = n;
+  }
+}
+
+async function deleteSelected() {
+  const checked = document.querySelectorAll('.row-check:checked');
+  if (checked.length === 0) return;
+  const items = Array.from(checked).map(cb => ({ id: parseInt(cb.dataset.id, 10), code: cb.dataset.code }));
+  const codes = items.map(i => i.code).join(', ');
+  const msg = items.length === 1
+    ? `Delete application ${codes}? It will be moved to the Deleted section.`
+    : `Delete ${items.length} applications?\n\n${codes}\n\nThey will be moved to the Deleted section.`;
+  if (!confirm(msg)) return;
+
+  try {
+    const res = await api('DELETE', '/api/officer/applications', { ids: items.map(i => i.id) });
+    const n = res.deleted ? res.deleted.length : 0;
+    if (n > 0) {
+      showToast(`${n} application${n > 1 ? 's' : ''} moved to Deleted.`);
+      await refreshCases();
+      if (me && me.is_admin) refreshDeletedCount();
+    }
+    if (res.errors && res.errors.length > 0) {
+      showToast(`${res.errors.length} could not be deleted.`, 'warn');
+    }
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function refreshDeletedCount() {
+  try {
+    const data = await api('GET', '/api/officer/applications/deleted');
+    state.deletedApplications = data.applications;
+    document.getElementById('c-deleted').textContent = data.applications.length;
+  } catch (_) {}
+}
+
+async function refreshDeleted() {
+  try {
+    const data = await api('GET', '/api/officer/applications/deleted');
+    state.deletedApplications = data.applications;
+    document.getElementById('c-deleted').textContent = data.applications.length;
+    renderCases();
+  } catch (e) {
+    showToast('Failed to load deleted applications: ' + e.message, 'error');
+  }
+}
+
+async function restoreSelected() {
+  const checked = document.querySelectorAll('.row-check:checked');
+  if (checked.length === 0) return;
+  const items = Array.from(checked).map(cb => ({ id: parseInt(cb.dataset.id, 10), code: cb.dataset.code }));
+  try {
+    const res = await api('POST', '/api/officer/applications/restore', { ids: items.map(i => i.id) });
+    const n = res.restored ? res.restored.length : 0;
+    if (n > 0) showToast(`${n} application${n > 1 ? 's' : ''} restored.`);
+    await refreshDeleted();
+    await refreshCases();
+  } catch (e) {
+    showToast('Restore failed: ' + e.message, 'error');
+  }
+}
+
+async function purgeSelected() {
+  const checked = document.querySelectorAll('.row-check:checked');
+  if (checked.length === 0) return;
+  const items = Array.from(checked).map(cb => ({ id: parseInt(cb.dataset.id, 10), code: cb.dataset.code }));
+  const codes = items.map(i => i.code).join(', ');
+  const msg = items.length === 1
+    ? `Permanently remove ${codes}? All data will be lost. This cannot be undone.`
+    : `Permanently remove ${items.length} applications?\n\n${codes}\n\nAll data will be lost. This cannot be undone.`;
+  if (!confirm(msg)) return;
+  try {
+    const res = await api('POST', '/api/officer/applications/purge', { ids: items.map(i => i.id) });
+    const n = res.purged ? res.purged.length : 0;
+    if (n > 0) showToast(`${n} application${n > 1 ? 's' : ''} permanently removed.`);
+    await refreshDeleted();
+  } catch (e) {
+    showToast('Purge failed: ' + e.message, 'error');
+  }
 }
 
 async function renderDrawer() {
