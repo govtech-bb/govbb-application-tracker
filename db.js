@@ -13,9 +13,20 @@ function sslConfig() {
   return { rejectUnauthorized: true };
 }
 
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/govbb_tracker',
-  ssl: sslConfig()
+  ssl: sslConfig(),
+  // Serverless: keep pool small, recycle connections before Neon kills them
+  max: IS_SERVERLESS ? 3 : 10,
+  idleTimeoutMillis: IS_SERVERLESS ? 10_000 : 30_000,
+  connectionTimeoutMillis: 5_000
+});
+
+// Log and discard broken connections instead of crashing the process
+pool.on('error', (err) => {
+  console.error('[pg] idle client error:', err.message);
 });
 
 async function initDb() {
